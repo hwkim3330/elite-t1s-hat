@@ -358,17 +358,17 @@ part("R7", "Device:R", "12k4 1%", FP_R0603,
 # --- supplies --------------------------------------------------------------
 part("FB1", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
      {1: "+3V3", 2: "VDDA"}, (33.0, 30.4, 270), (60.0, 60.0),
-     descr="VDDA supply island option: 0 ohm fitted; may be replaced by a "
+     descr="VDDA supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D); may be replaced by a "
            "~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).")
 part("FB2", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
      {1: "+3V3", 2: "VDDAU"}, (44, 29.5, 270), (60.0, 90.0),
-     descr="VDDAU supply island option: 0 ohm fitted.")
+     descr="VDDAU supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).")
 part("FB3", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
      {1: "+3V3", 2: "VDDP"}, (21.5, 18.725, 0), (60.0, 30.0),
-     descr="VDDP (pin 7) supply island option: 0 ohm fitted.")
+     descr="VDDP (pin 7) supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).")
 part("FB4", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
      {1: "+3V3", 2: "VDDP_17"}, (34.6, 14.1, 180), (110.0, 80.0),
-     descr="VDDP (pin 17) supply island option: 0 ohm fitted.")
+     descr="VDDP (pin 17) supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).")
 part("C6", "Device:C", "10uF", FP_C0805,
      {1: "+3V3", 2: "GND"}, (16, 18, 0), (40.0, 45.0),
      descr="Bulk decoupling on the 3.3 V supply side")
@@ -401,10 +401,15 @@ part("C13", "Device:C", "100nF", FP_C0603,
 part("C14", "Device:C", "10nF", FP_C0603,
      {1: "VDDAU", 2: "GND"}, (47.5, 26, 0), (195.0, 45.0),
      descr="VDDAU (pin 25) decoupling, 0.01 uF - closest to the pin")
-part("C4", "Device:C", "4.7uF low-ESR", FP_C0805,
+# CCOMP: the data sheet asks for "4.7 uF low ESR"; Microchip's hardware design
+# checklist (DS60001746D) says "low ESR metal film". A 4.7 uF metal-film part is not
+# a practical 0805; an X7R MLCC is low-ESR and stable, and at 1.8 V has no DC-bias
+# loss to speak of. X7R rather than the X5R first chosen, as the conservative step.
+part("C4", "Device:C", "4.7uF X7R", FP_C0805,
      {1: "CCOMP", 2: "GND"}, (39.5, 20.55, 0), (215.0, 45.0),
      descr="CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, "
-           "to the ground plane (LAN8651 only).")
+           "to the ground plane (LAN8651 only). X7R MLCC; see ELECTRICAL.md on "
+           "the checklist's 'metal film' wording.")
 part("C5", "Device:C", "100nF", FP_C0603,
      {1: "CCOMP", 2: "GND"}, (35.4, 21, 0), (232.0, 45.0),
      descr="CCOMP support capacitor (data sheet: useful, not required)")
@@ -444,7 +449,7 @@ part("D2", "Device:LED", "YEL", FP_LED,
 LCSC = {
     "U1": "C22386973",                    # LAN8651B1-E/LMX, extended, ~200 in stock
     "C1": "C28233", "C2": "C28233", "C3": "C28233",   # 100n 100V 0805 X7R, basic
-    "C4": "C1779",                        # 4.7u 25V 0805 X5R, basic
+    "C4": "C354262",                      # 4.7u 25V 0805 X7R, Yageo CC0805KKX7R8BB475
     "C6": "C15850",                       # 10u 25V 0805 X5R, basic
     "C5": "C14663", "C7": "C14663", "C9": "C14663",   # 100n 0603, basic
     "C11": "C14663", "C13": "C14663",
@@ -1708,6 +1713,16 @@ def draw_silk(board):
     px1, py1 = pin_xy(1)
     add_dot(board, pcbnew.F_SilkS, px1 + 2.2, py1, 0.40)
     add_text(board, "PIN 1", 57.8, 8.6, h=0.9, th=0.14, just="right")
+    # Probe points: the six host signals plus 3V3 and GND are adjacent pads of
+    # J1 (pins 15-24), reachable from the top once the socket is soldered.
+    # Labelling them is the test-point set the LAN8650/1 checklist asks for,
+    # without new copper on a signal path.
+    for pin, txt in ((15, "RST"), (17, "3V3"), (19, "MOSI"), (21, "MISO"), (23, "SCK")):
+        x, y = pin_xy(pin)
+        add_text(board, txt, x, y + 2.10, h=0.8, w=0.62, th=0.13)   # clear of J1's outline (+1.33)
+    for pin, txt in ((16, "IRQ"), (20, "GND"), (24, "CS")):
+        x, y = pin_xy(pin)
+        add_text(board, txt, x, y - 2.10, h=0.8, w=0.62, th=0.13)
 
     add_text(board, "LED0 DIOA0", 51.5, 23.5, h=0.8, w=0.7, th=0.13,
              just="left")

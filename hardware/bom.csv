@@ -9,7 +9,7 @@ Comment,Designator,Footprint,Quantity,Populate,Description,LCSC
 18pF,C16,Capacitor_SMD:C_0603_1608Metric,1,fit,Crystal load capacitor C2 (data sheet: C1 = C2 = 18 pF),C1647
 100nF/100V,C2,Capacitor_SMD:C_0805_2012Metric,1,fit,"AC coupling / galvanic isolation, bus N. ALWAYS FITTED (AN1718)",C28233
 100nF/100V,C3,Capacitor_SMD:C_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 C3)",C28233
-4.7uF low-ESR,C4,Capacitor_SMD:C_0805_2012Metric,1,fit,"CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only).",C1779
+4.7uF X7R,C4,Capacitor_SMD:C_0805_2012Metric,1,fit,"CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only). X7R MLCC; see ELECTRICAL.md on the checklist's 'metal film' wording.",C354262
 100nF,C5,Capacitor_SMD:C_0603_1608Metric,1,fit,"CCOMP support capacitor (data sheet: useful, not required)",C14663
 10uF,C6,Capacitor_SMD:C_0805_2012Metric,1,fit,Bulk decoupling on the 3.3 V supply side,C15850
 100nF,C7,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.1 uF",C14663
@@ -18,10 +18,10 @@ Comment,Designator,Footprint,Quantity,Populate,Description,LCSC
 T1S BUS  P N N P,CN1,"Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_P3.81mm_Horizontal",1,fit,"MDI connector, 4-pin 3.81 mm pluggable terminal block. Pins 1..4 = P N N P; the two P and the two N are shorted on board so the node taps a daisy chain.",C480536
 GRN,D1,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 0 on DIOA0 - firmware maps it (e.g. PLCA status),C12624
 YEL,D2,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 1 on DIOA1 - firmware maps it (e.g. activity),C89811
-0R (FB opt.),FB1,Inductor_SMD:L_0603_1608Metric,1,fit,VDDA supply island option: 0 ohm fitted; may be replaced by a ~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).,C21189
-0R (FB opt.),FB2,Inductor_SMD:L_0603_1608Metric,1,fit,VDDAU supply island option: 0 ohm fitted.,C21189
-0R (FB opt.),FB3,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 7) supply island option: 0 ohm fitted.,C21189
-0R (FB opt.),FB4,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 17) supply island option: 0 ohm fitted.,C21189
+0R (FB opt.),FB1,Inductor_SMD:L_0603_1608Metric,1,fit,VDDA supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D); may be replaced by a ~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).,C21189
+0R (FB opt.),FB2,Inductor_SMD:L_0603_1608Metric,1,fit,VDDAU supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189
+0R (FB opt.),FB3,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 7) supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189
+0R (FB opt.),FB4,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 17) supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189
 2x20 socket (riser stack),J1,Connector_PinHeader_2.54mm:PinHeader_2x20_P2.54mm_Vertical,1,fit,2x20 2.54 mm THT socket; mates with the riser that plugs onto the T-ETH-Elite's own 9.30 mm header pins,
 200uH @ 100kHz CMC,L1,t1s_hat:L_CommonMode_TDK_ACT1210_3225,1,fit,"Common-mode choke, 2-line, 200 uH @ 100 kHz, EIA 1210 (3.2x2.5 mm), AEC-Q200 - TDK ACT1210L-201-2P-TL00 (AN1718 L1). ALWAYS FITTED.",C131444
 220V(1mA) 1.5pF ESD (DNP) [DNP],MOV1,t1s_hat:Varistor_TDK_AVRH10_1005,1,DNP,"ESD element on bus P, at the connector (AN1718 MOV1) - TDK AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.",C2157827

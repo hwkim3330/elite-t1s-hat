@@ -39,7 +39,7 @@ them: DNP parts and J1 are left out on purpose (see section 3).
 | D1 | green LED 0603 | C12624 | extended | 353 k |
 | D2 | yellow LED 0603 | C89811 | preferred ext. | 41 k |
 | C1–C3 | 100 nF 100 V X7R 0805 | C28233 | basic | |
-| C4 | 4.7 µF 25 V X5R 0805 | C1779 | basic | |
+| C4 | 4.7 µF 25 V **X7R** 0805 (CCOMP) | C354262 | extended | 581 k |
 | C6 | 10 µF 25 V X5R 0805 | C15850 | basic | |
 | C5 C7 C9 C11 C13 | 100 nF 0603 | C14663 | basic | |
 | C8 C10 C12 C14 | 10 nF 0603 | C57112 | basic | |

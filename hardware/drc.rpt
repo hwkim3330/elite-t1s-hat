@@ -1,16 +1,16 @@
 ** Drc report for /home/kim/elite-t1s-hat/hardware/t1s_hat.kicad_pcb **
-** Created on 2026-09-28 13:56:04 **
+** Created on 2026-09-29 16:43:06 **
 
 ** Found 4 DRC violations **
-[lib_footprint_issues]: Footprint 'NPTH_2.75mm' not found in library 't1s_hat'.
-    Local override; Severity: warning
-    @(103.3300 mm, 95.3700 mm): Footprint H1
 [lib_footprint_issues]: Footprint 'NPTH_2.75mm' not found in library 't1s_hat'.
     Local override; Severity: warning
     @(102.9800 mm, 53.7700 mm): Footprint H3
 [lib_footprint_issues]: Footprint 'NPTH_2.75mm' not found in library 't1s_hat'.
     Local override; Severity: warning
     @(163.2300 mm, 53.8000 mm): Footprint H4
+[lib_footprint_issues]: Footprint 'NPTH_2.75mm' not found in library 't1s_hat'.
+    Local override; Severity: warning
+    @(103.3300 mm, 95.3700 mm): Footprint H1
 [lib_footprint_issues]: Footprint 'NPTH_2.75mm' not found in library 't1s_hat'.
     Local override; Severity: warning
     @(161.3300 mm, 95.3700 mm): Footprint H2

@@ -76,9 +76,19 @@ Decoupling, per the data sheet's own layout rule — *"Place one 0.01 µF and on
 
 - **each** of VDDP 7, VDDP 17, VDDA 29, VDDAU 25 → 0.1 µF + 0.01 µF
 - one 10 µF bulk near the device, on the supply side
-- **CCOMP (21) → 4.7 µF low-ESR** to ground. Required, not optional. 0.1 µF and
+- **CCOMP (21) → 4.7 µF low-ESR** to ground. Required, not optional. The data
+  sheet says "low ESR capacitor"; Microchip's Hardware Design Checklist
+  (DS60001746D) says "low ESR **metal film**". A 4.7 µF metal-film part is not a
+  practical 0805, so this board uses an **X7R** MLCC (Yageo CC0805KKX7R8BB475):
+  low ESR, stable over temperature, and at 1.8 V with no meaningful DC-bias loss.
+  If Microchip confirms the film requirement, C4 is the one part to change. 0.1 µF and
   0.01 µF alongside are "useful but not required" — include the 0.1 µF.
 - Ideally two vias per decoupling cap to the plane, and caps must not share vias.
+
+**If a real ferrite bead is fitted,** the checklist requires a local ~10 µF bulk
+capacitor between the bead and the pin's decoupling. The board has no footprint
+for that, so FB1–FB4 are 0 Ω links in practice; with 0 Ω links a single 10 µF on
+the 3.3 V supply (C6) is exactly what the checklist asks for.
 
 Optional, footprint-only: ferrite beads (~300 Ω @ 100 MHz, e.g. Würth
 742792640, DC rating ≥2× the pin current) to island VDDA (FB1) / VDDAU (FB2) /
@@ -254,7 +264,7 @@ works is two stages — a 2×20 stacking riser onto the Elite's pins, presenting
 longer pins, then this board's socket onto those. Put that in the BOM notes,
 not just here.
 
-Resulting height above the Elite PCB: **≈18-20 mm**, set by the riser. Nothing
+Resulting height above the Elite PCB: **≈23 mm (calculated)**, set by the riser. Nothing
 in the design may depend on an exact figure.
 
 The Elite carries an on-board PoE front end — RJ45 `HY931147C` tapping
@@ -269,7 +279,7 @@ document — if a future board revision changes the PD module, re-check it.
 
 ### Bottom side is usable
 
-At ~18-20 mm the underside of this board has 14+ mm of clearance everywhere
+At ~23 mm the underside of this board has 14+ mm of clearance everywhere
 except over the RJ45 footprint (x −5.18…16.42, y 10.50…28.90), where it is
 much less. Prefer the bottom for anything bulky. A later radar variant will
 want that space.

@@ -131,7 +131,7 @@ mounting holes and the 2×20 grid.
 ```
    T1S HAT  (this board)
         ↑ its 2x20 socket goes on the riser's long pins
-   ── 2x20 stacking riser ──          ≈18-20 mm total, set by the riser
+   ── 2x20 stacking riser ──          ≈23 mm total (calculated), set by the riser
         ↑ riser socket swallows the Elite's own 9.30 mm pins
         ↑ RJ45 (15.97 mm) passes beside the stack, not through a notch
    LilyGO T-ETH-Elite (ESP32-S3)
@@ -143,7 +143,8 @@ contacts sit near the top. You need a **riser** (a 2×20 stacking header that
 plugs onto the Elite and presents longer pins) plus this board's **socket**.
 That is a real failure mode someone will otherwise hit at the checkout page.
 
-Board height above the Elite PCB is **assumed ≈18–20 mm**, set by the riser.
+Board height above the Elite PCB is **≈23 mm, calculated** from the parts in
+`ORDERING.md` (riser body 8.3 + ~6 mm of pin inside J1 + J1's 8.5 body), and set by the riser.
 Nothing on this board depends on the exact number.
 
 ## Stack-up
@@ -354,6 +355,22 @@ header. Everything else on the bottom is GND pour. Over the Elite's RJ45
 (x −5.18…16.42, y 10.50…28.90) the clearance below is much less than
 elsewhere, since the jack tops out at 15.17 mm above the Elite's PCB.
 
+## Review notes (2026-09-29)
+
+An external review of Rev B raised these; each was checked against the board
+file and Microchip's documents before anything changed.
+
+| point | finding | action |
+|---|---|---|
+| BUS_P 37.7 mm vs BUS_N 21.9 mm | True totals, but the **node's own stub is 15.92 mm on both**. The difference is the through-bus between CN1's two halves (18.1 vs 3.8 mm): ≈93 ps of skew against an 80 ns symbol, ≈ −43 dB mode conversion at 25 MHz. | Kept. The suggested "P N" in + "P N" out needs the pair to cross (vias in the bus network); the mirrored **P N N P** is what makes both links routable on one layer. |
+| CCOMP "metal film" | The checklist does say it; the data sheet does not. | C4 X5R → **X7R**, discrepancy recorded in `ELECTRICAL.md`. |
+| Ferrite islands need local 10 µF | Correct per the checklist, **only if a bead is fitted**. | FB1–4 documented as 0 Ω links; with 0 Ω the single C6 is compliant. |
+| Test points for SPI/IRQ/RESET/3V3/GND | All eight are already adjacent J1 pads (pins 15–24), accessible from the top. | **Labelled** on the silkscreen instead of adding copper to the signal paths. |
+| Series-R footprints on SCLK/MOSI | Series damping belongs at the **driver**. SCLK/MOSI are driven by the ESP32, on the Elite, not here. | Not added. The firmware lowers the ESP32's drive strength instead; MISO's driver (LAN8651) has its own pad-drive setting (PADCTRL). |
+| 0.15 mm neck at the QFN | The pads are 0.25 mm wide on a 0.5 mm pitch, so the neck is the escape itself (TRXP 2.74 mm, TRXN 2.95 mm total). | Kept. |
+| Stack height 18–20 vs 23 mm | Stale text in three files. | Fixed: ≈23 mm (calculated) throughout. |
+| Antenna keepout | — | Unchanged. It is empty on purpose. |
+
 ## What is NOT verified — read before ordering
 
 - **Nothing has been bench-tested.** No board, no Elite, no riser in hand.
@@ -372,7 +389,6 @@ elsewhere, since the jack tops out at 15.17 mm above the Elite's PCB.
 - **Oscillator margin is only half-computed.** The crystal side is
   gm_crit ≈ 1.1 mA/V. Microchip does not publish the amplifier gm, so the
   margin has to be measured on the first board (`ELECTRICAL.md`, "Clock").
-- **The riser stack height is calculated, not measured.** With the parts in
-  `ORDERING.md` it comes to about 23 mm, not the 18–20 mm this README assumed.
-  Nothing on the board depends on the exact value, but the standoffs do.
+- **The riser stack height (≈23 mm) is calculated, not measured.** Nothing on the
+  board depends on the exact value, but the standoffs do: measure one stack first.
 - **No order was placed.** The deliverable is fab-ready files to upload.
