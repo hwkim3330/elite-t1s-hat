@@ -1,0 +1,5 @@
+# LilyGo mechanical files: fetched on demand (measure.py --fetch), never committed --
+# LilyGo publish them without a licence.
+*.dxf
+*.7z
+*.stl

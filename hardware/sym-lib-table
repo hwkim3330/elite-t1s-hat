@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "t1s_hat")(type "KiCad")(uri "${KIPRJMOD}/sym/t1s_hat.kicad_sym")(options "")(descr "Parts created for this board"))
+)

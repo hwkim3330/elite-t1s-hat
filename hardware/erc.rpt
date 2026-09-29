@@ -1,0 +1,25 @@
+ERC report (Mon 28 Sep 2026 01:56:55 PM KST, Encoding UTF8)
+
+***** Sheet /
+[pin_to_pin]: Pins of type Bidirectional and Power output are connected
+    ; Severity: warning
+    @(213.3600 mm, 127.0000 mm): Symbol U1 Pin 16 [DIOB0, Bidirectional, Line]
+    @(69.8500 mm, 250.1900 mm): Symbol #FLG053 Pin 1 [pwr, Power output, Line]
+[pin_to_pin]: Pins of type Bidirectional and Power output are connected
+    ; Severity: warning
+    @(213.3600 mm, 124.4600 mm): Symbol U1 Pin 23 [DIOA4, Bidirectional, Line]
+    @(69.8500 mm, 250.1900 mm): Symbol #FLG053 Pin 1 [pwr, Power output, Line]
+[pin_to_pin]: Pins of type Bidirectional and Power output are connected
+    ; Severity: warning
+    @(213.3600 mm, 119.3800 mm): Symbol U1 Pin 20 [DIOA2, Bidirectional, Line]
+    @(69.8500 mm, 250.1900 mm): Symbol #FLG053 Pin 1 [pwr, Power output, Line]
+[pin_to_pin]: Pins of type Bidirectional and Power output are connected
+    ; Severity: warning
+    @(213.3600 mm, 121.9200 mm): Symbol U1 Pin 22 [DIOA3, Bidirectional, Line]
+    @(69.8500 mm, 250.1900 mm): Symbol #FLG053 Pin 1 [pwr, Power output, Line]
+[pin_to_pin]: Pins of type Bidirectional and Power output are connected
+    ; Severity: warning
+    @(213.3600 mm, 129.5400 mm): Symbol U1 Pin 14 [DIOB1, Bidirectional, Line]
+    @(69.8500 mm, 250.1900 mm): Symbol #FLG053 Pin 1 [pwr, Power output, Line]
+
+ ** ERC messages: 5  Errors 0  Warnings 5

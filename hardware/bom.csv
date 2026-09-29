@@ -1,0 +1,39 @@
+Comment,Designator,Footprint,Quantity,Populate,Description,LCSC
+100nF/100V,C1,Capacitor_SMD:C_0805_2012Metric,1,fit,"AC coupling / galvanic isolation, bus P. ALWAYS FITTED (AN1718)",C28233
+10nF,C10,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 17) decoupling, 0.01 uF - closest to the pin",C57112
+100nF,C11,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDA (pin 29) decoupling, 0.1 uF",C14663
+10nF,C12,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDA (pin 29) decoupling, 0.01 uF - closest to the pin",C57112
+100nF,C13,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDAU (pin 25) decoupling, 0.1 uF",C14663
+10nF,C14,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDAU (pin 25) decoupling, 0.01 uF - closest to the pin",C57112
+18pF,C15,Capacitor_SMD:C_0603_1608Metric,1,fit,Crystal load capacitor C1 (data sheet: C1 = C2 = 18 pF),C1647
+18pF,C16,Capacitor_SMD:C_0603_1608Metric,1,fit,Crystal load capacitor C2 (data sheet: C1 = C2 = 18 pF),C1647
+100nF/100V,C2,Capacitor_SMD:C_0805_2012Metric,1,fit,"AC coupling / galvanic isolation, bus N. ALWAYS FITTED (AN1718)",C28233
+100nF/100V,C3,Capacitor_SMD:C_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 C3)",C28233
+4.7uF low-ESR,C4,Capacitor_SMD:C_0805_2012Metric,1,fit,"CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only).",C1779
+100nF,C5,Capacitor_SMD:C_0603_1608Metric,1,fit,"CCOMP support capacitor (data sheet: useful, not required)",C14663
+10uF,C6,Capacitor_SMD:C_0805_2012Metric,1,fit,Bulk decoupling on the 3.3 V supply side,C15850
+100nF,C7,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.1 uF",C14663
+10nF,C8,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.01 uF - closest to the pin",C57112
+100nF,C9,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 17) decoupling, 0.1 uF",C14663
+T1S BUS  P N N P,CN1,"Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_P3.81mm_Horizontal",1,fit,"MDI connector, 4-pin 3.81 mm pluggable terminal block. Pins 1..4 = P N N P; the two P and the two N are shorted on board so the node taps a daisy chain.",C480536
+GRN,D1,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 0 on DIOA0 - firmware maps it (e.g. PLCA status),C12624
+YEL,D2,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 1 on DIOA1 - firmware maps it (e.g. activity),C89811
+0R (FB opt.),FB1,Inductor_SMD:L_0603_1608Metric,1,fit,VDDA supply island option: 0 ohm fitted; may be replaced by a ~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).,C21189
+0R (FB opt.),FB2,Inductor_SMD:L_0603_1608Metric,1,fit,VDDAU supply island option: 0 ohm fitted.,C21189
+0R (FB opt.),FB3,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 7) supply island option: 0 ohm fitted.,C21189
+0R (FB opt.),FB4,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 17) supply island option: 0 ohm fitted.,C21189
+2x20 socket (riser stack),J1,Connector_PinHeader_2.54mm:PinHeader_2x20_P2.54mm_Vertical,1,fit,2x20 2.54 mm THT socket; mates with the riser that plugs onto the T-ETH-Elite's own 9.30 mm header pins,
+200uH @ 100kHz CMC,L1,t1s_hat:L_CommonMode_TDK_ACT1210_3225,1,fit,"Common-mode choke, 2-line, 200 uH @ 100 kHz, EIA 1210 (3.2x2.5 mm), AEC-Q200 - TDK ACT1210L-201-2P-TL00 (AN1718 L1). ALWAYS FITTED.",C131444
+220V(1mA) 1.5pF ESD (DNP) [DNP],MOV1,t1s_hat:Varistor_TDK_AVRH10_1005,1,DNP,"ESD element on bus P, at the connector (AN1718 MOV1) - TDK AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.",C2157827
+220V(1mA) 1.5pF ESD (DNP) [DNP],MOV2,t1s_hat:Varistor_TDK_AVRH10_1005,1,DNP,"ESD element on bus N, at the connector (AN1718 MOV2) - TDK AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.",C2157827
+49R9 1% 1W (DNP) [DNP],R1,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, P leg. 49R9 1% 1W for an END node, 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
+49R9 1% 1W (DNP) [DNP],R2,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, N leg. 49R9 1% 1W for an END node, 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
+100k 5%,R3,Resistor_SMD:R_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 R3)",C149504
+10k,R4,Resistor_SMD:R_0603_1608Metric,1,fit,RESET_N pull-up: a floating host GPIO during ESP32 boot must not hold the PHY in reset,C25804
+10k,R5,Resistor_SMD:R_0603_1608Metric,1,fit,SPI CS_N pull-up,C25804
+10k,R6,Resistor_SMD:R_0603_1608Metric,1,fit,IRQ_N pull-up (open-drain capable interrupt output),C25804
+12k4 1%,R7,Resistor_SMD:R_0603_1608Metric,1,fit,RBIAS. 12.4 kohm 1% over the whole operating temperature range - no substitutions (data sheet).,C22865
+1k,R8,Resistor_SMD:R_0603_1608Metric,1,fit,LED0 series resistor to 3V3 (DIOA0 sinks),C21190
+1k,R9,Resistor_SMD:R_0603_1608Metric,1,fit,LED1 series resistor to 3V3 (DIOA1 sinks),C21190
+LAN8651,U1,Package_DFN_QFN:TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias,1,fit,"Microchip LAN8651 10BASE-T1S MAC-PHY, OPEN Alliance TC6 SPI, 32-VQFN 5x5 (internal 1.8 V core LDO -> single 3.3 V rail)",C22386973
+25.000MHz CL12,Y1,Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm,1,fit,"25.000 MHz fundamental crystal, CL 12 pF, ESR 50 ohm max, SMD3225-4P - YXC X322525MOB4SI. No series or feedback resistor (data sheet).",C9006
