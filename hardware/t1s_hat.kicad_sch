@@ -3329,7 +3329,7 @@
     (property "Datasheet" "" (at 289.56 44.45 0)
       (effects (font (size 1.27 1.27)) hide)
     )
-    (property "Description" "CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only). X7R MLCC; see ELECTRICAL.md on the checklist's 'metal film' wording." (at 289.56 44.45 0)
+    (property "Description" "CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only). Microchip asks for metal film; X7R MLCC here is a prototype deviation, see ELECTRICAL.md." (at 289.56 44.45 0)
       (effects (font (size 1.27 1.27)) hide)
     )
     (property "LCSC" "C354262" (at 289.56 44.45 0)

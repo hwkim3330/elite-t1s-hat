@@ -76,13 +76,18 @@ Decoupling, per the data sheet's own layout rule — *"Place one 0.01 µF and on
 
 - **each** of VDDP 7, VDDP 17, VDDA 29, VDDAU 25 → 0.1 µF + 0.01 µF
 - one 10 µF bulk near the device, on the supply side
-- **CCOMP (21) → 4.7 µF low-ESR** to ground. Required, not optional. The data
-  sheet says "low ESR capacitor"; Microchip's Hardware Design Checklist
-  (DS60001746D) says "low ESR **metal film**". A 4.7 µF metal-film part is not a
-  practical 0805, so this board uses an **X7R** MLCC (Yageo CC0805KKX7R8BB475):
-  low ESR, stable over temperature, and at 1.8 V with no meaningful DC-bias loss.
-  If Microchip confirms the film requirement, C4 is the one part to change. 0.1 µF and
-  0.01 µF alongside are "useful but not required" — include the 0.1 µF.
+- **CCOMP (21) → 4.7 µF low-ESR** to ground. Required, not optional. Microchip
+  asks for **"4.7 µF low ESR (metal film)"** — in the data sheet's body
+  (DS60001734F, power-supply section) and in the Hardware Design Checklist
+  (DS60001746D); only the pin-description table says plain "low ESR capacitor".
+  A 4.7 µF metal-film part is not a practical 0805, so this board uses an **X7R**
+  MLCC (Yageo CC0805KKX7R8BB475): low ESR, stable over temperature, and at 1.8 V
+  with no meaningful DC-bias loss. **This is a deliberate deviation, not Microchip
+  compliance.** It is accepted for the prototypes and must be checked on them:
+  the 1.8 V at CCOMP (level and ripple on a scope), clean start-up and reset,
+  a link that stays up over hours, and behaviour warm. If any of these fail, C4 is
+  the one part to change. 0.1 µF and 0.01 µF alongside are "useful but not
+  required" — include the 0.1 µF.
 - Ideally two vias per decoupling cap to the plane, and caps must not share vias.
 
 **If a real ferrite bead is fitted,** the checklist requires a local ~10 µF bulk

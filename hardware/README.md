@@ -363,13 +363,31 @@ file and Microchip's documents before anything changed.
 | point | finding | action |
 |---|---|---|
 | BUS_P 37.7 mm vs BUS_N 21.9 mm | True totals, but the **node's own stub is 15.92 mm on both**. The difference is the through-bus between CN1's two halves (18.1 vs 3.8 mm): ≈93 ps of skew against an 80 ns symbol, ≈ −43 dB mode conversion at 25 MHz. | Kept. The suggested "P N" in + "P N" out needs the pair to cross (vias in the bus network); the mirrored **P N N P** is what makes both links routable on one layer. |
-| CCOMP "metal film" | The checklist does say it; the data sheet does not. | C4 X5R → **X7R**, discrepancy recorded in `ELECTRICAL.md`. |
+| CCOMP "metal film" | Correct: the data sheet's body (DS60001734F) and the checklist both say "4.7 µF low ESR (metal film)"; only the pin table says "low ESR". *(An earlier version of this table said the data sheet does not — that was wrong.)* | C4 X5R → **X7R**, recorded in `ELECTRICAL.md` as a **non-compliant prototype choice** to verify on the first boards. |
 | Ferrite islands need local 10 µF | Correct per the checklist, **only if a bead is fitted**. | FB1–4 documented as 0 Ω links; with 0 Ω the single C6 is compliant. |
 | Test points for SPI/IRQ/RESET/3V3/GND | All eight are already adjacent J1 pads (pins 15–24), accessible from the top. | **Labelled** on the silkscreen instead of adding copper to the signal paths. |
 | Series-R footprints on SCLK/MOSI | Series damping belongs at the **driver**. SCLK/MOSI are driven by the ESP32, on the Elite, not here. | Not added. The firmware lowers the ESP32's drive strength instead; MISO's driver (LAN8651) has its own pad-drive setting (PADCTRL). |
 | 0.15 mm neck at the QFN | The pads are 0.25 mm wide on a 0.5 mm pitch, so the neck is the escape itself (TRXP 2.74 mm, TRXN 2.95 mm total). | Kept. |
 | Stack height 18–20 vs 23 mm | Stale text in three files. | Fixed: ≈23 mm (calculated) throughout. |
 | Antenna keepout | — | Unchanged. It is empty on purpose. |
+
+## Rev B is frozen
+
+No further layout changes before hardware exists. Build **2–3 prototypes**
+(the `jlcpcb/end/` variant, 49R9, for a two-node END/END link) and bring them up
+in this order, each step only after the previous one passes:
+
+1. Power: 3.3 V rail, then **CCOMP ≈1.8 V** (level and ripple — the X7R check)
+2. SPI: DEVID read (MMS10 0x94)
+3. RESET and IRQ lines
+4. T1S link up
+5. PLCA, node 0 and node 1
+6. Ping
+7. UDP throughput — first target 3–5 Mbit/s, 7–9 Mbit/s once tuned
+8. Zenoh
+9. Scope TRXP/TRXN at the connector
+
+Anything found goes into Rev C; Rev B's files stay as ordered.
 
 ## What is NOT verified — read before ordering
 

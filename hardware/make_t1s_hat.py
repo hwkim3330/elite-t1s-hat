@@ -401,15 +401,16 @@ part("C13", "Device:C", "100nF", FP_C0603,
 part("C14", "Device:C", "10nF", FP_C0603,
      {1: "VDDAU", 2: "GND"}, (47.5, 26, 0), (195.0, 45.0),
      descr="VDDAU (pin 25) decoupling, 0.01 uF - closest to the pin")
-# CCOMP: the data sheet asks for "4.7 uF low ESR"; Microchip's hardware design
-# checklist (DS60001746D) says "low ESR metal film". A 4.7 uF metal-film part is not
-# a practical 0805; an X7R MLCC is low-ESR and stable, and at 1.8 V has no DC-bias
-# loss to speak of. X7R rather than the X5R first chosen, as the conservative step.
+# CCOMP: the data sheet's body (DS60001734F, power section) and Microchip's hardware
+# design checklist (DS60001746D) both ask for "4.7 uF low ESR (metal film)"; only the
+# pin table says plain "low ESR capacitor". A 4.7 uF metal-film part is not a practical
+# 0805, so C4 is an X7R MLCC: a deliberate deviation for the prototypes, NOT Microchip-
+# compliant, to be checked on the first boards (ELECTRICAL.md, "Bring-up").
 part("C4", "Device:C", "4.7uF X7R", FP_C0805,
      {1: "CCOMP", 2: "GND"}, (39.5, 20.55, 0), (215.0, 45.0),
      descr="CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, "
-           "to the ground plane (LAN8651 only). X7R MLCC; see ELECTRICAL.md on "
-           "the checklist's 'metal film' wording.")
+           "to the ground plane (LAN8651 only). Microchip asks for metal film; "
+           "X7R MLCC here is a prototype deviation, see ELECTRICAL.md.")
 part("C5", "Device:C", "100nF", FP_C0603,
      {1: "CCOMP", 2: "GND"}, (35.4, 21, 0), (232.0, 45.0),
      descr="CCOMP support capacitor (data sheet: useful, not required)")

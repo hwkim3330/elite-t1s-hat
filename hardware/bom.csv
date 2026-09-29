@@ -9,7 +9,7 @@ Comment,Designator,Footprint,Quantity,Populate,Description,LCSC
 18pF,C16,Capacitor_SMD:C_0603_1608Metric,1,fit,Crystal load capacitor C2 (data sheet: C1 = C2 = 18 pF),C1647
 100nF/100V,C2,Capacitor_SMD:C_0805_2012Metric,1,fit,"AC coupling / galvanic isolation, bus N. ALWAYS FITTED (AN1718)",C28233
 100nF/100V,C3,Capacitor_SMD:C_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 C3)",C28233
-4.7uF X7R,C4,Capacitor_SMD:C_0805_2012Metric,1,fit,"CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only). X7R MLCC; see ELECTRICAL.md on the checklist's 'metal film' wording.",C354262
+4.7uF X7R,C4,Capacitor_SMD:C_0805_2012Metric,1,fit,"CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, to the ground plane (LAN8651 only). Microchip asks for metal film; X7R MLCC here is a prototype deviation, see ELECTRICAL.md.",C354262
 100nF,C5,Capacitor_SMD:C_0603_1608Metric,1,fit,"CCOMP support capacitor (data sheet: useful, not required)",C14663
 10uF,C6,Capacitor_SMD:C_0805_2012Metric,1,fit,Bulk decoupling on the 3.3 V supply side,C15850
 100nF,C7,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.1 uF",C14663
