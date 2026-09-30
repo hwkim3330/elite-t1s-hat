@@ -103,7 +103,8 @@ data sheet recommends carrying the option through prototype. Populate 0 Ω.
 ## Clock
 
 25.0 MHz crystal, fundamental, parallel resonant, across XTI (27) / XTO (28),
-load caps **C1 = C2 = 18 pF** (data sheet allows 10–22 pF).
+load caps **C15 = C16 = 18 pF** (data sheet allows 10–22 pF; it calls them C1/C2 — on
+this board C1/C2 are the bus DC-block caps).
 
 > "external series resistors should not be used… The device contains an internal
 > ~1 MΩ resistance in parallel with the crystal amplifier… therefore an external
@@ -125,9 +126,9 @@ Two corrections to what the board had before:
   so it matched no orderable part. The land is now KiCad's
   `Crystal_SMD_3225-4Pin_3.2x2.5mm`.
 - **CL 12 pF, with the 18 pF load caps kept.** The load a crystal sees is
-  C1·C2/(C1+C2) + C_stray = 18/2 + ~3 pF ≈ **12 pF**. A CL 18 pF crystal on
+  C15·C16/(C15+C16) + C_stray = 18/2 + ~3 pF ≈ **12 pF**. A CL 18 pF crystal on
   18 pF caps would therefore run fast; it would need ~30 pF caps instead. The
-  data sheet's C1 = C2 = 18 pF figure is kept, and the crystal is chosen to
+  data sheet's 18 pF figure is kept for C15/C16, and the crystal is chosen to
   match it.
 
 **Oscillator margin, as far as it can be computed without the amplifier's
@@ -197,9 +198,9 @@ TRXP/TRXN ─ CMC(L1) ─ C1/C2 100nF ─ [R1/R2 termination] ─ [ESD] ─ CN1
 
 | ref | value | note |
 |---|---|---|
-| L1 | common-mode choke, 130 µH @ 100 kHz — TDK ACT1210D-131-2P-TL00 (or ACT1210E-241 / Murata DLW32MH241MX2) | **always populated** |
+| L1 | common-mode choke, **200 µH @ 100 kHz — TDK ACT1210L-201-2P-TL00** (LCSC C131444), ACT1210 package | **always populated.** AN1718's examples are ACT1210D-131 (130 µH), ACT1210E-241 / Murata DLW32MH241MX2 (240 µH); the note leaves the choice to the application. 200 µH sits inside that span, is AEC-Q200 and was the one in stock: a **prototype-selected alternative, EMC validation pending**. The land fits all three. |
 | C1, C2 | 0.1 µF, 100 V, 0805 | DC block / galvanic isolation. **Always populated, on every node.** |
-| R1, R2 | **49.9 Ω 1 % 1 W 1206** for an END-OF-BUS node<br>**1.5 kΩ 1 % 1206** for an interior DROP node | footprints fitted, **DNP by default** — stuff per where this node sits on the bus |
+| R1, R2 | **49.9 Ω 1 % 1206** for an END-OF-BUS node — AN1718 lists **1 W**; the part ordered is **0.75 W** (C4014562), a lab-prototype substitution because no 1 W 1206 was stocked (ORDERING.md). Fit a 1 W part (Susumu HRG3216P, Vishay PHP01206) by hand for anything past the bench.<br>**1.5 kΩ 1 % 1206** for an interior DROP node | footprints fitted, **DNP by default** — stuff per where this node sits on the bus |
 | R3 | 100 kΩ 5 % 0805 + C3 | common-mode termination (drop node), per AN1718's drop-node topology |
 | MOV1/2 | TDK AVRH10C221KT1R5YA8 or Panasonic EZA-EG3W11AV | ESD, optional, footprint by the connector |
 | CN1 | 4-pin 3.81 mm pluggable terminal block | P_in/N_in + P_out/N_out, the two P's and the two N's shorted on board so the node taps a daisy chain |
@@ -211,7 +212,9 @@ which resistors get stuffed, marked on silkscreen, not by a removable jumper.
 ## Status LEDs
 
 Two, on DIOA0 (18) and DIOA1 (19) — configurable outputs in the VDDP domain, so
-1 kΩ series to 3V3. Firmware maps them to PLCA status / activity. Remaining
+1 kΩ series to 3V3. **Reserved for status LEDs; firmware mapping pending** — the
+firmware reads PADCTRL but does not yet set the DIOA0/1 pad function, so the
+LEDs stay dark until it does (`../firmware/README.md`). Remaining
 DIOA2/3/4 and DIOB0 go to ground.
 
 ## Board rules

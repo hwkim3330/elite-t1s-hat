@@ -11,10 +11,11 @@
 > sits (x 58…66). The grid positions themselves were always right.
 >
 > Carried over on 2026-09-28 from an earlier adapter project (a Pi-HAT carrier
-> for the Elite), where it was first written. The
-> T1S HAT uses its outline, mounting holes and 2×20 grid as-is. Its notch
-> section does not apply here: this board clears the RJ45 by stack height
-> instead (see `../hardware/README.md`). `reference/measure.py` re-derives
+> for the Elite), where it was first written. The T1S HAT uses its outline,
+> mounting holes and 2×20 grid as-is. The adapter's own outline, RJ45 notch and
+> six-hole pattern do **not** apply to this board and now live in
+> [`legacy_adapter_geometry.md`](legacy_adapter_geometry.md); the last section
+> below is the T1S HAT as built. `reference/measure.py` re-derives
 > every number from LilyGo's own files, in `reference/`.
 
 Every number below was measured from a primary source and cross-checked against
@@ -55,8 +56,8 @@ Bottom pair spacing **58.00**, top pair **60.25** — the asymmetry is real desi
 not a CAD slip; three independent files agree to <0.1. PCB hole Ø2.500 on the
 board itself; M2.5 hardware.
 
-A useful consequence: **the pattern is self-keying.** 58.00 ≠ 60.25 means this
-adapter physically cannot be bolted on rotated 180°.
+A useful consequence: **the pattern is self-keying.** 58.00 ≠ 60.25 means a board on
+this hole set physically cannot be bolted on rotated 180°.
 
 ### 40-pin GPIO header
 
@@ -98,8 +99,9 @@ all. What that does *not* give you is anywhere to put the HAT's far mounting
 pair, which lands at y = 53.63, past the Elite's own 49.19 edge — so the HAT
 would hang off two screws at the connector end. On a board carrying a
 lever-actuated terminal block that is the difference between a fixture and a
-wobble. The notch, the far holes and the BOOT/RST access are what this board
-adds; only the last two are things a header cannot do.
+wobble. (That was the adapter's reason to exist. The T1S HAT answers it differently: it
+keeps the Elite's own four holes and outline, so all four standoffs land on the
+Elite — see the last section.)
 
 ## LilyGo's own LoRa shield — the reference design for stacking on this board
 
@@ -111,78 +113,21 @@ adds; only the last two are things a header cannot do.
 | connector | one 2×20 **stacking header**: socket barrel ~13.0 below the shield PCB, pins reaching 9.30 above it — one part, one set of 40 holes |
 
 So LilyGo stack their shields at ~13 mm above the base PCB and clear the RJ45
-with a notch. This adapter does the same thing.
+with a notch. The T1S HAT does not: it is lifted above the jack instead.
 
-## The TSN Lab 10Base-T1S HAT (the board this adapter exists to carry)
+## Therefore — the T1S HAT (Rev B)
 
-Silkscreen on the product photo reads **`10BASE-T1S HAT / LAN8651 / For RPi /
-TSNlab+Ethercrafts`** — note **LAN8651**, not the LAN8650 the devicemart listing
-states.
+| item | value |
+|---|---|
+| outline | 0…66.22 × 0…**49.19**, R3 corners — the Elite's own outline |
+| RJ45 notch | **none** — the board sits above the jack on a riser |
+| mounting holes | **4**, Ø2.75 NPTH (M2.5 free fit), the Elite's own set: (3.33, 4.63) (61.33, 4.63) (2.98, 46.23) (63.23, 46.20) |
+| 2×20 socket | on the grid above, pin 1 = (56.456, 5.900) |
+| antenna keepout | x 58.00…66.22, y 22.00…44.00, all layers, nothing placed |
+| stack height | HAT underside ≈**23** above the Elite PCB — **calculated, not measured** |
 
-Measured off the product photo, scaled by the known 48.26 mm pin-row span:
-
-| item | value | confidence |
-|---|---|---|
-| mounting holes | a **rectangle**, ratio 0.852 vs the Pi spec's 49/58 = 0.845 | good — it is a standard Pi 58 × 49 pattern |
-| board | ≈63 × 55, i.e. a normal-size HAT | photo-derived, ±2 |
-| edge inset of holes | ≈3.5 | photo-derived |
-
-Photo-derived numbers are **not** used for anything this board's correctness
-depends on. They are used only to justify one decision: that placing the two far
-holes on the Pi spec's 49 mm offset is the right call. The listing's "57×75×23"
-does not match the photo and is assumed to be packaging.
-
-## Therefore — this adapter
-
-Outline 0…66.22 × 0…**57.20**, R3 corners. Same width as the base board;
-extended +8.0 in y past it so it can carry the HAT's far mounting holes, which
-land beyond the base board's own edge.
-
-**RJ45 notch: x 0…17.40, y 10.00…29.40** — deliberately ~0.5 larger all round
-than the RJ45's measured envelope, rather than a copy of LilyGo's slightly
-tighter 16.87/11.25/28.45. The notch region is empty board on this design, so
-the extra clearance costs nothing.
-
-### Holes — 6, all Ø2.75 (M2.5 free fit)
-
-| ref | position | serves |
-|---|---|---|
-| H1 | (3.33, 4.63) | T-ETH-Elite bottom-left **and** HAT near-left |
-| H2 | (61.33, 4.63) | T-ETH-Elite bottom-right **and** HAT near-right |
-| H3 | (2.98, 46.23) | T-ETH-Elite top-left |
-| H4 | (63.23, 46.20) | T-ETH-Elite top-right |
-| H5 | (3.33, 53.63) | HAT far-left |
-| H6 | (61.33, 53.63) | HAT far-right |
-
-H1/H2 are shared on purpose. Deriving the Pi near-hole positions in this frame
-from the header (centre 32.326 ± 29.0, y = the header centre 4.63) gives
-(3.326, 4.63) and (61.326, 4.63) — the T-ETH-Elite's own bottom holes to within
-**0.005 mm**. They are the same holes; one pair is drilled, not two.
-
-H5/H6 are H1/H2 offset by the Pi spec's +49.0 in y.
-
-### Connector
-
-One 2×20 THT stacking header, pins on the grid above: x = 8.196 + 2.54·k
-(k = 0…19), y = 3.360 and 5.900. Plated through-holes with annular rings both
-sides — the solder joint is what mechanically anchors the stack.
-
-No traces. The signal path is the stacking header's own pin, straight through
-from the socket below to the exposed pin above; the board contributes nothing
-electrical and pin-to-pin identity is guaranteed by the part, not by copper.
-Every pad is an isolated net by design.
-
-### Stack-up that results
-
-```
-   TSN Lab 10Base-T1S HAT (LAN8651)
-        ↑ plugs onto the pins protruding above the adapter
-   ── this adapter ──                      ≈13 above the Elite PCB
-        ↑ stacking-header socket swallows the Elite's 9.30 pins
-        ↑ RJ45 (15.97) passes up through the notch
-   LilyGO T-ETH-Elite (ESP32-S3)
-```
-
-Standoffs: Elite → adapter ≈13 (set by the chosen stacking header's barrel);
-adapter → HAT set by that header's above-board pin length. Both are properties
-of the header part, so pick the standoffs after picking the header, not before.
+Why no notch, and the two-stage riser that sets the height, are in
+[`../hardware/ELECTRICAL.md`](../hardware/ELECTRICAL.md) ("Mechanical"). The
+23 mm figure is the one mechanical number here not taken from a primary source:
+check it, and the clearance over the RJ45 and PoE module, with a real Elite,
+riser and socket before trusting it.

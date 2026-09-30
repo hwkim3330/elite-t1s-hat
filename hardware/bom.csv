@@ -26,8 +26,8 @@ YEL,D2,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 1 on DIOA1 - firmware maps i
 200uH @ 100kHz CMC,L1,t1s_hat:L_CommonMode_TDK_ACT1210_3225,1,fit,"Common-mode choke, 2-line, 200 uH @ 100 kHz, EIA 1210 (3.2x2.5 mm), AEC-Q200 - TDK ACT1210L-201-2P-TL00 (AN1718 L1). ALWAYS FITTED.",C131444
 220V(1mA) 1.5pF ESD (DNP) [DNP],MOV1,t1s_hat:Varistor_TDK_AVRH10_1005,1,DNP,"ESD element on bus P, at the connector (AN1718 MOV1) - TDK AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.",C2157827
 220V(1mA) 1.5pF ESD (DNP) [DNP],MOV2,t1s_hat:Varistor_TDK_AVRH10_1005,1,DNP,"ESD element on bus N, at the connector (AN1718 MOV2) - TDK AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.",C2157827
-49R9 1% 1W (DNP) [DNP],R1,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, P leg. 49R9 1% 1W for an END node, 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
-49R9 1% 1W (DNP) [DNP],R2,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, N leg. 49R9 1% 1W for an END node, 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
+49R9 1% (DNP) [DNP],R1,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, P leg. 49R9 1% for an END node (AN1718: 1 W; the orderable part is 0.75 W, see ORDERING.md), 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
+49R9 1% (DNP) [DNP],R2,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, N leg. 49R9 1% for an END node (AN1718: 1 W; the orderable part is 0.75 W, see ORDERING.md), 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
 100k 5%,R3,Resistor_SMD:R_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 R3)",C149504
 10k,R4,Resistor_SMD:R_0603_1608Metric,1,fit,RESET_N pull-up: a floating host GPIO during ESP32 boot must not hold the PHY in reset,C25804
 10k,R5,Resistor_SMD:R_0603_1608Metric,1,fit,SPI CS_N pull-up,C25804

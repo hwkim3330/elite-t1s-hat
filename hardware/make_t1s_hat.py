@@ -286,13 +286,13 @@ part("C1", "Device:C", "100nF/100V", FP_C0805,
 part("C2", "Device:C", "100nF/100V", FP_C0805,
      {1: "CMC_N", 2: "BUS_N"}, (27.5, 30.8, 90), (250.0, 136.0),
      descr="AC coupling / galvanic isolation, bus N. ALWAYS FITTED (AN1718)")
-part("R1", "Device:R", "49R9 1% 1W (DNP)", FP_R1206,
+part("R1", "Device:R", "49R9 1% (DNP)", FP_R1206,
      {1: "BUS_P", 2: "BUS_CT"}, (32, 34.2, 180), (288.0, 112.0), dnp=True,
-     descr="Bus termination, P leg. 49R9 1% 1W for an END node, 1K5 1% for "
+     descr="Bus termination, P leg. 49R9 1% for an END node (AN1718: 1 W; the orderable part is 0.75 W, see ORDERING.md), 1K5 1% for "
            "a DROP node. Shipped unstuffed - see README.")
-part("R2", "Device:R", "49R9 1% 1W (DNP)", FP_R1206,
+part("R2", "Device:R", "49R9 1% (DNP)", FP_R1206,
      {1: "BUS_N", 2: "BUS_CT"}, (25, 34.2, 0), (288.0, 142.0), dnp=True,
-     descr="Bus termination, N leg. 49R9 1% 1W for an END node, 1K5 1% for "
+     descr="Bus termination, N leg. 49R9 1% for an END node (AN1718: 1 W; the orderable part is 0.75 W, see ORDERING.md), 1K5 1% for "
            "a DROP node. Shipped unstuffed - see README.")
 part("R3", "Device:R", "100k 5%", FP_R0805,
      {1: "BUS_CT", 2: "GND"}, (30.9, 37, 0), (300.0, 127.0),
@@ -1179,7 +1179,9 @@ def add_npth(board, ref, gx, gy, diameter, descr):
     fp.SetFPID(pcbnew.LIB_ID("t1s_hat", "NPTH_%.2fmm" % diameter))
     fp.SetReference(ref)
     fp.SetValue("NPTH_%.2fmm" % diameter)
-    fp.SetDescription(descr)
+    # the library's description, not the per-hole one: KiCad's footprint-vs-
+    # library check compares it, and HOLES already says which hole is which
+    fp.SetDescription("Unplated mounting hole, %.2f mm (M2.5 free fit)" % diameter)
     fp.Reference().SetVisible(False)
     fp.Value().SetVisible(False)
     fp.SetAttributes(pcbnew.FP_EXCLUDE_FROM_POS_FILES |
@@ -1197,6 +1199,13 @@ def add_npth(board, ref, gx, gy, diameter, descr):
     fp.SetPosition(V(gx, gy))
     pad.SetPosition(V(gx, gy))
     pad.SetPos0(pcbnew.VECTOR2I(0, 0))
+    # save this very footprint as the library's copy, so DRC has an entry to
+    # compare the board's holes against and the two cannot drift apart
+    lib = fp.Duplicate()
+    lib.SetPosition(pcbnew.VECTOR2I(0, 0))
+    lib.SetReference("REF**")
+    lib.SetDescription("Unplated mounting hole, %.2f mm (M2.5 free fit)" % diameter)
+    pcbnew.PCB_PLUGIN().FootprintSave(FPDIR, lib)
     return fp
 
 
@@ -1638,9 +1647,14 @@ def add_zones(board):
          rule_area=True, no_pour=True, no_tracks=True, no_vias=True,
          no_pads=True, no_fp=True, name="ANTENNA KEEPOUT")
     # all-layer void under the CMC
+    # (F.Cu keeps tracks allowed: L1's own escapes have to leave its pads;
+    # verify() polices that layer by net instead)
     zone(board, None, ALL, rect(*CMC_VOID),
          rule_area=True, no_pour=True, no_tracks=False, no_vias=True,
          name="CMC ALL-LAYER VOID")
+    zone(board, None, [pcbnew.In1_Cu, pcbnew.In2_Cu, pcbnew.B_Cu], rect(*CMC_VOID),
+         rule_area=True, no_pour=True, no_tracks=True, no_vias=True,
+         name="CMC VOID - NO TRACKS BELOW")
     # outer-layer ground-flood void around the BIN (F.Cu only)
     zone(board, None, [pcbnew.F_Cu], rect(*BIN_VOID),
          rule_area=True, no_pour=True, name="BIN GROUND-FLOOD VOID")
@@ -2069,6 +2083,29 @@ def verify(board):
              t.GetLayer() in (pcbnew.In1_Cu, pcbnew.In2_Cu)]
     row("plane tracks", "0 on In1/In2", "%d tracks" % len(inner),
         (float(len(inner)),))
+    # the all-layer void under the choke: no track or via of any net crosses it
+    # on any layer (L1's own pads sit inside it, their stubs leave it)
+    vx0, vy0, vx1, vy1 = CMC_VOID
+
+    def _in_void(pt):
+        gx, gy = pt.x / 1e6 - 100.0, 100.0 - pt.y / 1e6
+        return vx0 < gx < vx1 and vy0 < gy < vy1
+
+    def _crosses(t):
+        a, b = t.GetStart(), t.GetEnd()
+        return any(_in_void(pcbnew.VECTOR2I(int(a.x + (b.x - a.x) * k / 20),
+                                            int(a.y + (b.y - a.y) * k / 20)))
+                   for k in range(21))
+    # F.Cu: L1's own nets, plus one known exception -- the VDDA dogleg from U1
+    # pin 29 runs up x = 29.75 to y 24.9, 0.25 mm inside the choke body's
+    # maximum outline.  Rev B is frozen; moving it is queued for Rev C
+    # (README).  Anything else appearing here fails.
+    f_ok = {"TRXP", "TRXN", "CMC_P", "CMC_N", "VDDA"}
+    void_hits = [t for t in board.GetTracks() if _crosses(t) and not
+                 (t.Type() != pcbnew.PCB_VIA_T and t.GetLayer() == pcbnew.F_Cu
+                  and t.GetNetname() in f_ok)]
+    row("CMC void", "no track/via below F.Cu", "%d" % len(void_hits),
+        (float(len(void_hits)),))
     pair = [t for t in board.GetTracks()
             if t.Type() != pcbnew.PCB_VIA_T and t.GetNetname() in
             ("CMC_P", "CMC_N", "BUS_P", "BUS_N")]

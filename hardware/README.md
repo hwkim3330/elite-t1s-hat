@@ -177,7 +177,7 @@ silkscreen carries the table:
 
 | where this node sits | R1, R2 |
 |---|---|
-| **end of the bus** | 49R9 1 % 1 W 1206 |
+| **end of the bus** | 49R9 1 % 1206 (AN1718: 1 W; the JLC variant fits 0.75 W — ORDERING.md) |
 | **interior drop node** | 1K5 1 % 1206 |
 
 `R3` (100 k) and `C3` (100 nF) — AN1718's common-mode termination — **are
@@ -388,6 +388,22 @@ in this order, each step only after the previous one passes:
 9. Scope TRXP/TRXN at the connector
 
 Anything found goes into Rev C; Rev B's files stay as ordered.
+
+**The Rev B order is a prototype build:** C4 is X7R where Microchip asks for
+metal film, R1/R2 are 0.75 W where AN1718 lists 1 W, and L1 is a 200 µH choke
+outside AN1718's named examples. Each is documented in `ELECTRICAL.md`; none is
+for a board that leaves the bench.
+
+### Queued for Rev C (need copper changes, so not in Rev B)
+
+- CCOMP: a land that takes a metal-film part, or a dual MLCC/film footprint
+- real 1 mm test pads for CS_N, SCLK, MOSI, MISO, IRQ_N with GND next to them
+  (Microchip's checklist; Rev B has J1 pads with silkscreen labels only)
+- move the VDDA dogleg (U1 pin 29) out of the choke's outline: it runs along
+  x 29.75 to y 24.9, 0.25 mm inside L1's maximum body, on F.Cu (the void below
+  it, on every other layer, is clean — asserted)
+- whatever bring-up on the Rev B boards turns up, including the measured
+  stack height
 
 ## What is NOT verified — read before ordering
 

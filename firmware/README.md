@@ -93,6 +93,7 @@ ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)
 spi <mhz>                  SPI clock 1..25, on reboot (default 12)
 ping <ip> [n]              ICMP over the bus
 blast <ip> [sec] [bytes]   UDP to port 9, reports offered Mbit/s
+sink [reset]               what arrived on this node's port 9, and at what rate
 reg r|w <mms> <addr> [val] raw LAN8651 register (hex)
 save / reboot
 ```
@@ -120,11 +121,15 @@ R1/R2 = 49R9 (the README's termination table). Then:
 node A:  plca 0 2      save  reboot     # coordinator, 2 nodes -> 192.168.50.10
 node B:  plca 1 2      save  reboot     # -> 192.168.50.11
 node A:  ping 192.168.50.11
+node A:  sink reset
 node B:  blast 192.168.50.10 10
+node A:  sink                            # what actually arrived
 ```
 
 Wire CN1 P to P and N to N (pins 1/4 are P, 2/3 are N). With PLCA on both,
-`blast` should approach the bus rate; with `csma` on both it will still work,
+`blast` reports what left node B, `sink` on node A what arrived; the gap
+between them is loss on the bus. Targets: **3–5 Mbit/s** delivered at first,
+**7–9 Mbit/s** once tuned (SPI clock, frame size). `blast` should approach the bus rate; with `csma` on both it will still work,
 with random backoff instead of fixed slots.
 
 A PC can only join with its own T1S interface (e.g. a USB 10BASE-T1S

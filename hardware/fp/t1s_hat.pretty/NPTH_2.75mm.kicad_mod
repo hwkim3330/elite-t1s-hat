@@ -1,0 +1,14 @@
+(footprint "NPTH_2.75mm" (version 20221018) (generator pcbnew)
+  (layer "F.Cu")
+  (descr "Unplated mounting hole, 2.75 mm (M2.5 free fit)")
+  (attr exclude_from_pos_files exclude_from_bom)
+  (fp_text reference "REF**" (at 0 0) (layer "F.SilkS") hide
+      (effects (font (size 1.27 1.27) (thickness 0.15)))
+    (tstamp 183e9cb5-ed1f-4211-b9fd-51be923b56ef)
+  )
+  (fp_text value "NPTH_2.75mm" (at 0 0) (layer "F.SilkS") hide
+      (effects (font (size 1.27 1.27) (thickness 0.15)))
+    (tstamp 8a997ea8-7ab7-48c4-87ed-66207b3f72fc)
+  )
+  (pad "" np_thru_hole circle (at 0 0) (size 2.75 2.75) (drill 2.75) (layers "F&B.Cu" "*.Mask") (tstamp 571f45c4-6f51-451e-a89e-a4c8583b9c3d))
+)

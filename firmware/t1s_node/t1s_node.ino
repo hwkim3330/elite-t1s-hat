@@ -56,6 +56,10 @@ static esp_eth_mac_t *gMac = nullptr;
 static esp_netif_t *gNetif = nullptr;
 static volatile bool gLinkUp = false;
 static volatile uint32_t gEchoCount = 0;
+// port 9 (discard) sink: what a peer's `blast` actually delivered here
+static volatile uint32_t gSinkPackets = 0;
+static volatile uint64_t gSinkBytes = 0;
+static volatile uint32_t gSinkT0 = 0, gSinkLast = 0;
 
 // 192.168.50.(10 + id), or .9 with PLCA off. A separate /24 from the W5500 bench
 // (192.168.1.x) so the two interfaces can be up together later without a routing question.
@@ -303,6 +307,37 @@ static void echoTask(void *) {
   }
 }
 
+// The receiving half of `blast`: count what arrives on port 9 and drop it. `sink` on this
+// node then says what the far side's offered load turned into after the bus.
+static void sinkTask(void *) {
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in a = {};
+  a.sin_family = AF_INET;
+  a.sin_port = htons(9);
+  bind(s, (sockaddr *)&a, sizeof(a));
+  static uint8_t buf[1536];
+  for (;;) {
+    int n = recv(s, buf, sizeof(buf), 0);
+    if (n <= 0) continue;
+    const uint32_t now = millis();
+    if (gSinkPackets == 0) gSinkT0 = now;
+    gSinkLast = now;
+    gSinkPackets = gSinkPackets + 1;
+    gSinkBytes = gSinkBytes + n;
+  }
+}
+
+static void cmdSink(bool reset) {
+  const uint32_t pk = gSinkPackets;
+  const uint64_t by = gSinkBytes;
+  const float secs = pk > 1 ? (gSinkLast - gSinkT0) / 1000.0f : 0.0f;
+  // same accounting as blast: payload + 42 B of Ethernet/IP/UDP headers per datagram
+  const float mbit = secs > 0 ? (by + 42.0f * pk) * 8 / secs / 1e6f : 0.0f;
+  Serial.printf("sink: %lu packets, %llu B in %.1f s = %.2f Mbit/s on the wire\n",
+                (unsigned long)pk, (unsigned long long)by, secs, mbit);
+  if (reset) { gSinkPackets = 0; gSinkBytes = 0; Serial.println("sink: counters reset"); }
+}
+
 // ---------------------------------------------------------------- console commands
 
 static void cmdPing(const char *host, int count) {
@@ -336,7 +371,7 @@ static void cmdPing(const char *host, int count) {
 }
 
 // Push UDP at a peer's discard port for a few seconds and report what left. That is the
-// offered load the MAC-PHY accepted, not what arrived -- read the far side's counters for that.
+// offered load the MAC-PHY accepted, not what arrived -- `sink` on the far node says that.
 static void cmdBlast(const char *host, int seconds, int size) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in to = {};
@@ -379,6 +414,7 @@ static void cmdStatus() {
   Serial.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz  echo %lu\n", gLinkUp ? "up" : "down",
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gCfg.spiMhz, (unsigned long)gEchoCount);
   if (gCfg.mode == kModeBridge) bridge::printStats();
+  else cmdSink(false);
   if (gEth) printPlca();
   // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads --
   // the two LEDs on this board -- are currently muxed. PADCTRL is printed, not written: which
@@ -403,9 +439,10 @@ static void help() {
       "spi <mhz>                  SPI clock, 1..25 (applied on reboot)\n"
       "ping <ip> [n]              ICMP over the T1S bus\n"
       "blast <ip> [sec] [bytes]   UDP to port 9, reports offered rate\n"
+      "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "save / reboot              write config to flash / restart\n"
-      "(UDP echo always runs on port 7)");
+      "(UDP echo on port 7 and the discard sink on port 9 always run)");
 }
 
 static void handleLine(char *line) {
@@ -417,6 +454,7 @@ static void handleLine(char *line) {
   int n = sscanf(rest, "%31s %31s", a, b);
 
   if (!strcmp(cmd, "status")) cmdStatus();
+  else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "plca") && n >= 1) {
     gCfg.plcaId = atoi(a);
     if (n >= 2) gCfg.plcaCount = atoi(b);
@@ -472,6 +510,7 @@ void setup() {
     if (!bridge::start(gEth)) Serial.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
   } else {
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
+    xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
   }
   help();
 }
