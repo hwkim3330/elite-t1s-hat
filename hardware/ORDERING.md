@@ -1,7 +1,12 @@
 # Ordering the T1S HAT at JLCPCB
 
 What to upload, what to tick, and the three things to look at before paying.
-Stock figures are from JLCPCB's part search on **2026-09-28**.
+Stock figures are LCSC's, re-checked on **2026-09-30**.
+
+**For the Rev B prototype run (2–3 boards, END/END link): upload
+`gerbers/t1s_hat_gerbers.zip`, then `jlcpcb/end/bom_jlc.csv` and
+`jlcpcb/end/cpl_jlc.csv`.** That variant has R1/R2 = 49R9 fitted, which is
+what a two-node bench needs. The sections below explain each choice.
 
 ## 1. PCB
 
@@ -25,19 +30,35 @@ plus separate PTH/NPTH Excellon and a job file).
 
 ## 2. Assembly (PCBA), top side only
 
-Upload **`jlcpcb/bom_jlc.csv`** and **`jlcpcb/cpl_jlc.csv`**. Both are written
-by `make_t1s_hat.py` in JLCPCB's own column names. Only fitted parts are in
-them: DNP parts and J1 are left out on purpose (see section 3).
+Upload the BOM and CPL of one variant — **`jlcpcb/end/`** (R1/R2 49R9,
+end-of-bus nodes: the prototype run), `jlcpcb/drop/` (R1/R2 1K5, interior
+nodes) or `jlcpcb/` (R1/R2 left unfitted). All are written by
+`make_t1s_hat.py` in JLCPCB's own column names. J1 and the MOVs are left out
+on purpose (see section 3).
+
+**The CPL is in JLC's footprint frame, not KiCad's**, and
+`check_jlc_cpl.py` proves it: it fetches the EasyEDA footprint JLC places for
+every LCSC number, puts it where the CPL says, and checks each pad lands on
+ours (0 parts off, all three variants, 2026-09-30). Two parts needed
+correcting against a plain KiCad export — without this, both would have been
+placed wrong:
+
+- **L1** — EasyEDA draws the ACT1210 turned 90° from ours: CPL says 0°, not
+  KiCad's 90°. (EasyEDA also numbers its pads in mirror order; the windings
+  are straight across in both, so each still joins TRX to CMC on its own line.)
+- **CN1** — EasyEDA's origin is the body centre, KiCad's is pin 1: the CPL
+  gives the pad centroid, 5.715 mm from KiCad's origin.
 
 | ref | part | LCSC | JLC class | stock |
 |---|---|---|---|---|
-| U1 | Microchip LAN8651B1-E/LMX, VQFN-32 5×5 | C22386973 | extended | **~200: check first** |
-| Y1 | YXC X322525MOB4SI 25 MHz CL12 3225-4P | C9006 | basic | 74 k |
-| L1 | TDK ACT1210L-201-2P-TL00 CMC | C131444 | extended | 4 k |
+| U1 | Microchip LAN8651B1-E/LMX, VQFN-32 5×5 | C22386973 | extended | **173: check first** |
+| Y1 | YXC X322525MOB4SI 25 MHz CL12 3225-4P | C9006 | basic | 58 k |
+| L1 | TDK ACT1210L-201-2P-TL00 CMC | C131444 | extended | 3.6 k |
 | CN1 | Phoenix 1803293 MC 1,5/4-G-3,81 (THT) | C480536 | extended | 2.4 k |
-| R7 | 12k4 1 % 0603 | C22865 | extended (no basic exists) | 228 k |
-| D1 | green LED 0603 | C12624 | extended | 353 k |
-| D2 | yellow LED 0603 | C89811 | preferred ext. | 41 k |
+| R7 | 12k4 1 % 0603 | C22865 | extended (no basic exists) | 197 k |
+| D1 | KENTO KT-0603G green LED 0603 | C12624 | extended | 332 k |
+| D2 | KENTO KT-0603Y yellow LED 0603 | C2287 | extended | 80 k (was C89811, down to 20) |
+| R1, R2 (`end/`) | Vishay CRCW120649R9FKEAHP 49R9 1 % 1206 0.75 W | C4014562 | extended | 6.2 k |
 | C1–C3 | 100 nF 100 V X7R 0805 | C28233 | basic | |
 | C4 | 4.7 µF 25 V **X7R** 0805 (CCOMP) — **PROTOTYPE_X7R**: Microchip asks for metal film, see ELECTRICAL.md | C354262 | extended | 581 k |
 | C6 | 10 µF 25 V X5R 0805 | C15850 | basic | |
@@ -52,9 +73,9 @@ them: DNP parts and J1 are left out on purpose (see section 3).
 7 extended parts, so expect 7 extended-part setup fees. CN1 is through-hole:
 either let JLC fit it (THT assembly fee) or delete its line and hand-solder it.
 
-**Before confirming, look at JLC's placement preview for these, because a
-rotation convention that differs between KiCad and JLC's reel data is the
-usual way a board comes back wrong:**
+**Before confirming, still look at JLC's placement preview for these** —
+`check_jlc_cpl.py` checks footprints, not the reel orientation JLC's
+engineers apply:
 
 1. **U1 pin 1.** The silkscreen dot/chamfer on the QFN has to match the
    part's pin-1 mark. If it is off by 90° or 180°, fix it in the preview (JLC
@@ -94,13 +115,12 @@ but had **zero stock** anywhere at JLC on 2026-09-28. The 0.75 W part is what
 can be bought. Dissipation at 10BASE-T1S levels is milliwatts, so 1 W is
 margin, not need.
 
-To have JLC fit them for an end-node batch, add a line to `bom_jlc.csv`
-(`49R9,"R1,R2",R_1206_3216Metric,C4014562`). Their positions are already in
-`cpl.csv`; copy the R1/R2 lines into `cpl_jlc.csv` in the same format.
+To have JLC fit them, upload the `jlcpcb/end/` or `jlcpcb/drop/` variant
+instead of `jlcpcb/`: it is the same BOM/CPL with the R1/R2 lines added.
 
 ## 5. For an 8-node bus
 
 Eight nodes on one bus means **two end nodes (49R9) and six drop nodes
 (1K5, per `ELECTRICAL.md`)**. Order 10 boards and fit R1/R2 by hand. That is simpler than two
-BOM variants and leaves spares. At ~200 in stock, U1 is the only part that
+BOM variants and leaves spares. At 173 in stock (2026-09-30), U1 is the only part that
 limits the order quantity.

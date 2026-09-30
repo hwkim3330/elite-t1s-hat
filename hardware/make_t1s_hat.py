@@ -463,7 +463,7 @@ LCSC = {
     "FB1": "C21189", "FB2": "C21189", "FB3": "C21189",  # 0R 0603, basic
     "FB4": "C21189",
     "D1": "C12624",                       # green 0603, extended
-    "D2": "C89811",                       # yellow 0603, preferred extended
+    "D2": "C2287",                        # KENTO KT-0603Y yellow 0603 (C89811 fell to 20 in stock, 2026-09-30)
     "CN1": "C480536",                     # Phoenix 1803293 MC 1,5/4-G-3,81
     "R1": "C4014562", "R2": "C4014562",   # DNP option: 49R9 1% 1206 0.75 W
 }
@@ -2232,7 +2232,7 @@ def write_jlc():
                                               key=lambda kv: kv[1][0]):
             wr.writerow([value, ",".join(sorted(refs)), fp.split(":")[-1], lcsc])
     keep = {p["ref"] for p in fit}
-    rows = list(csv.DictReader(open(os.path.join(HERE, "cpl.csv"))))
+    rows = [jlc_place(r) for r in csv.DictReader(open(os.path.join(HERE, "cpl.csv")))]
     with open(os.path.join(out, "cpl_jlc.csv"), "w", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(["Designator", "Mid X", "Mid Y", "Layer", "Rotation"])
@@ -2268,6 +2268,30 @@ def write_jlc():
                 wr.writerow([ref, r["PosX"] + "mm", r["PosY"] + "mm",
                              "Top" if r["Side"] == "top" else "Bottom", r["Rot"]])
     print("wrote jlcpcb/end/ (R1/R2 49R9) and jlcpcb/drop/ (R1/R2 1K5)")
+
+
+# JLC places each part with the footprint of its LCSC number (EasyEDA's library),
+# not with ours, so the CPL has to be in THAT footprint's frame. Each part's LCSC
+# footprint was compared pad by pad with ours on 2026-09-30 (check_jlc_cpl.py
+# re-runs it); two differ:
+#   L1  EasyEDA draws the ACT1210 with its terminals along y, ours along x:
+#       our 90 deg placement is its 0 deg. At 90 it would sit across the pads.
+#   CN1 EasyEDA's origin is the body centre, KiCad's Phoenix footprint's is pin 1:
+#       5.715 mm apart. JLC's position has to be the pad centroid.
+JLC_ROT_FIX = {"L1": -90.0}
+JLC_CENTROID = {"CN1"}
+
+
+def jlc_place(r):
+    r = dict(r)
+    if r["Ref"] in JLC_ROT_FIX:
+        r["Rot"] = "%.6f" % ((float(r["Rot"]) + JLC_ROT_FIX[r["Ref"]]) % 360)
+    if r["Ref"] in JLC_CENTROID:
+        fp = pcbnew.LoadBoard(PCB_PATH).FindFootprintByReference(r["Ref"])
+        ps = [q.GetPosition() for q in fp.Pads()]
+        r["PosX"] = "%.6f" % (sum(q.x for q in ps) / len(ps) / 1e6 - 100.0)
+        r["PosY"] = "%.6f" % (100.0 - sum(q.y for q in ps) / len(ps) / 1e6)
+    return r
 
 
 def export_all():

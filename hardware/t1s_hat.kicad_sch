@@ -3751,7 +3751,7 @@
     (property "Description" "Status LED 1 on DIOA1 - firmware maps it (e.g. activity)" (at 304.80 214.63 0)
       (effects (font (size 1.27 1.27)) hide)
     )
-    (property "LCSC" "C89811" (at 304.80 214.63 0)
+    (property "LCSC" "C2287" (at 304.80 214.63 0)
       (effects (font (size 1.27 1.27)) hide)
     )
     (pin "1" (uuid 8df789b4-15ab-5c91-a4cc-e522c8912ad1))

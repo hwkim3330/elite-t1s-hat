@@ -27,7 +27,7 @@ There is also a STEP file for CAD work (`t1s_hat.step`).
 | | |
 |---|---|
 | Design | Rev B (4-layer) done. DRC 0 errors, ERC 0 errors, mechanical error 0.00000 mm against `GEOMETRY.md`, 0 unrouted |
-| Parts | every fitted part has an LCSC number, all in stock; **LAN8651 is the scarce one (~200 at JLC)** |
+| Parts | every fitted part has an LCSC number, all in stock; **LAN8651 is the scarce one (173 at LCSC, 2026-09-30)** |
 | Firmware | compiles (Arduino esp32 3.3.0); **not run: no board has been built** |
 | Fabricated | **no.** Order 2–3 first, prove SPI + ping + PLCA between two nodes, then the rest |
 
