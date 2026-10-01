@@ -517,6 +517,8 @@ void setup() {
   } else {
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
+    // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
+    zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
   help();
 }
@@ -530,9 +532,6 @@ void loop() {
     if (c == '\n') { line[len] = 0; handleLine(line); len = 0; }
     else if (len < sizeof(line) - 1) line[len++] = c;
   }
-  // Zenoh over T1S (node mode, only if zenoh-pico was compiled in)
-  if (gCfg.mode != kModeBridge && gNetif)
-    zenohT1sLoop(gLinkUp, gCfg.plcaId == kPlcaOff ? -1 : gCfg.plcaId, gCfg.plcaCount);
   // Board LED: solid with link, slow blink without -- visible from across the bench.
   digitalWrite(kPinBoardLed, gLinkUp ? HIGH : (millis() / 500) & 1);
   delay(5);

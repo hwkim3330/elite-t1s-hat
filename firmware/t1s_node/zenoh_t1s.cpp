@@ -157,10 +157,27 @@ void zenohT1sPrintStatus() {
 
 bool zenohT1sAvailable() { return true; }
 
+struct TaskArgs { volatile bool *up; const uint8_t *id, *cnt; uint8_t off; };
+static TaskArgs sArgs;
+
+static void zenohTask(void *) {
+  for (;;) {
+    const uint8_t id = *sArgs.id;
+    zenohT1sLoop(*sArgs.up, id == sArgs.off ? -1 : id, *sArgs.cnt);
+    vTaskDelay(pdMS_TO_TICKS(5));
+  }
+}
+
+void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_t *plcaCount, uint8_t plcaOff) {
+  sArgs = {netUp, plcaId, plcaCount, plcaOff};
+  xTaskCreate(zenohTask, "zenoh_t1s", 12288, nullptr, 3, nullptr);
+}
+
 #else  // built without T1S_WITH_ZENOH
 
 void zenohT1sLoop(bool, int, int) {}
 void zenohT1sPrintStatus() { Serial.println("zenoh: not built in (compile with zenoh-pico)"); }
 bool zenohT1sAvailable() { return false; }
+void zenohT1sStartTask(volatile bool *, const uint8_t *, const uint8_t *, uint8_t) {}
 
 #endif
