@@ -22,6 +22,7 @@
 #include "src/lan865x/esp_eth_mac_lan865x.h"
 #include "src/lan865x/esp_eth_phy_lan865x.h"
 #include "bridge.h"
+#include "zenoh_t1s.h"
 
 // w5500_spi.h (shared with the W5500 bench firmware) declares this extern; one definition per image.
 W5500Spi *gW5500Spi = nullptr;
@@ -440,6 +441,7 @@ static void help() {
       "ping <ip> [n]              ICMP over the T1S bus\n"
       "blast <ip> [sec] [bytes]   UDP to port 9, reports offered rate\n"
       "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
+      "zenoh                      zenoh-pico session over T1S (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "save / reboot              write config to flash / restart\n"
       "(UDP echo on port 7 and the discard sink on port 9 always run)");
@@ -454,6 +456,7 @@ static void handleLine(char *line) {
   int n = sscanf(rest, "%31s %31s", a, b);
 
   if (!strcmp(cmd, "status")) cmdStatus();
+  else if (!strcmp(cmd, "zenoh")) zenohT1sPrintStatus();
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "plca") && n >= 1) {
     gCfg.plcaId = atoi(a);
@@ -524,6 +527,9 @@ void loop() {
     if (c == '\n') { line[len] = 0; handleLine(line); len = 0; }
     else if (len < sizeof(line) - 1) line[len++] = c;
   }
+  // Zenoh over T1S (node mode, only if zenoh-pico was compiled in)
+  if (gCfg.mode != kModeBridge && gNetif)
+    zenohT1sLoop(gLinkUp, gCfg.plcaId == kPlcaOff ? -1 : gCfg.plcaId, gCfg.plcaCount);
   // Board LED: solid with link, slow blink without -- visible from across the bench.
   digitalWrite(kPinBoardLed, gLinkUp ? HIGH : (millis() / 500) & 1);
   delay(5);

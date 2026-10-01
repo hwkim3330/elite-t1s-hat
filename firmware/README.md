@@ -147,3 +147,28 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
 - **The 12 MHz default SPI clock is a cautious starting point, not a measurement.**
   Raise it on the bench and watch for parity errors, the way the W5500 clock
   was settled on the W5500 bench.
+
+## Zenoh-pico over T1S (optional)
+
+Build with zenoh-pico on the library path and two flags, and the node opens a Zenoh
+session over the LAN8651's network interface once the bus is up:
+
+```bash
+F="-DZENOH_ARDUINO_ESP32 -DT1S_WITH_ZENOH"
+arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=cdc \
+  --library <path>/zenoh-pico \
+  --build-property "compiler.c.extra_flags=$F" --build-property "compiler.cpp.extra_flags=$F" t1s_node
+```
+
+It publishes `t1s/t1s-hat-<id>/hello` (2 Hz), `t1s/t1s-hat-<id>/signal` (20 Hz),
+`test/ping/t1s-hat-<id>` (5 Hz, echoed by a peer on `test/pong/…`) and
+`test/stats/t1s-hat-<id>` (RTT, 1 Hz), and prints anything sent to
+`t1s/t1s-hat-<id>/cmd`. Router locator: `ZENOH_LOCATOR` (default
+`udp/192.168.100.50:7447`). `zenoh` on the console shows the session and RTT.
+Without the flags the file is a stub and the build is unchanged.
+
+Measured (2026-10-01, PC ─ 100BASE-TX/10BASE-T1S converter ═ T1S ═ LAN8651 HAT,
+PLCA 2 nodes): SPI 25 MHz gives RTT 0.85 ms (64 B ping, p99 0.99), 9.0 Mbit/s
+PC → node without loss and 9.5 Mbit/s node → PC; SPI 12 MHz gives 6.0 / 6.3 Mbit/s.
+Zenoh ping through the router: ~3.1 ms.
+
