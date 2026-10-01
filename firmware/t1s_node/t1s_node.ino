@@ -373,11 +373,13 @@ static void cmdPing(const char *host, int count) {
 
 // Push UDP at a peer's discard port for a few seconds and report what left. That is the
 // offered load the MAC-PHY accepted, not what arrived -- `sink` on the far node says that.
-static void cmdBlast(const char *host, int seconds, int size) {
+// Each datagram starts with a 32-bit sequence number (little endian), so the receiver can
+// count loss and reordering and time the gaps between frames.
+static void cmdBlast(const char *host, int seconds, int size, int port = 9) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in to = {};
   to.sin_family = AF_INET;
-  to.sin_port = htons(9);
+  to.sin_port = htons(port);
   if (!inet_aton(host, &to.sin_addr)) { Serial.println("blast: bad address"); close(s); return; }
   size = constrain(size, 18, 1472);
   static uint8_t buf[1472];
@@ -385,6 +387,7 @@ static void cmdBlast(const char *host, int seconds, int size) {
   uint32_t sent = 0, failed = 0;
   const uint32_t t0 = millis();
   while (millis() - t0 < (uint32_t)seconds * 1000) {
+    memcpy(buf, &sent, 4);
     if (sendto(s, buf, size, 0, (sockaddr *)&to, sizeof(to)) == size) sent++;
     else { failed++; delay(1); }  // ENOMEM when TX credits run out: back off, not spin
   }
@@ -439,7 +442,7 @@ static void help() {
       "ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)\n"
       "spi <mhz>                  SPI clock, 1..25 (applied on reboot)\n"
       "ping <ip> [n]              ICMP over the T1S bus\n"
-      "blast <ip> [sec] [bytes]   UDP to port 9, reports offered rate\n"
+      "blast <ip> [sec] [bytes] [port]  UDP (default port 9), seq-numbered, reports offered rate\n"
       "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
       "zenoh                      zenoh-pico session over T1S (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
@@ -483,9 +486,9 @@ static void handleLine(char *line) {
     Serial.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
   } else if (!strcmp(cmd, "ping") && n >= 1) cmdPing(a, n >= 2 ? atoi(b) : 5);
   else if (!strcmp(cmd, "blast") && n >= 1) {
-    int sec = 5, size = 1472;
-    sscanf(rest, "%*s %d %d", &sec, &size);
-    cmdBlast(a, sec, size);
+    int sec = 5, size = 1472, port = 9;
+    sscanf(rest, "%*s %d %d %d", &sec, &size, &port);
+    cmdBlast(a, sec, size, constrain(port, 1, 65535));
   } else if (!strcmp(cmd, "reg") && n >= 1 && (a[0] == 'r' || a[0] == 'w')) cmdReg(a[0] == 'w', rest + strlen(a));
   else if (!strcmp(cmd, "mode") && n >= 1) {
     if (!strcmp(a, "bridge")) gCfg.mode = kModeBridge;
