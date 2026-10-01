@@ -532,7 +532,23 @@ void loop() {
     if (c == '\n') { line[len] = 0; handleLine(line); len = 0; }
     else if (len < sizeof(line) - 1) line[len++] = c;
   }
-  // Board LED: solid with link, slow blink without -- visible from across the bench.
-  digitalWrite(kPinBoardLed, gLinkUp ? HIGH : (millis() / 500) & 1);
+  // Board LED (the Elite's own, IO38) shows T1S state -- the LAN8651 has no LED function
+  // of its own (its DIOA pins are event capture/generator only):
+  //   PLCA on:  solid = beacons seen (PLCA_STS.PST), fast blink = no beacons
+  //   PLCA off: solid = link up
+  //   no link:  slow blink
+  static uint32_t tPst = 0;
+  static bool pst = false;
+  const bool plcaOn = gCfg.plcaId != kPlcaOff;
+  if (plcaOn && gMac && millis() - tPst > 250) {
+    tPst = millis();
+    uint32_t v = 0;
+    if (esp_eth_mac_lan865x_read_reg(gMac, 4, 0xCA03, &v) == ESP_OK) pst = v & 0x8000;
+  }
+  bool on;
+  if (!gLinkUp) on = (millis() / 500) & 1;
+  else if (plcaOn) on = pst || ((millis() / 125) & 1);
+  else on = true;
+  digitalWrite(kPinBoardLed, on ? HIGH : LOW);
   delay(5);
 }

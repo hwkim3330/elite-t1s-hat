@@ -209,13 +209,16 @@ TRXP/TRXN ─ CMC(L1) ─ C1/C2 100nF ─ [R1/R2 termination] ─ [ESD] ─ CN1
 stubs minimised; a jumper header on T1S is a stub. Termination is selected by
 which resistors get stuffed, marked on silkscreen, not by a removable jumper.
 
-## Status LEDs
+## Status LED — none on this board (Rev C)
 
-Two, on DIOA0 (18) and DIOA1 (19) — configurable outputs in the VDDP domain, so
-1 kΩ series to 3V3. **Reserved for status LEDs; firmware mapping pending** — the
-firmware reads PADCTRL but does not yet set the DIOA0/1 pad function, so the
-LEDs stay dark until it does (`../firmware/README.md`). Remaining
-DIOA2/3/4 and DIOB0 go to ground.
+The LAN8651 has **no LED function**: PADCTRL (0x88) A0SEL/A1SEL select only event
+capture (input) or event generator (output) for DIOA0/1 (DS60001734F §11.6.3). Rev B
+put LEDs on them that firmware could never have driven with PLCA state; Rev C ties
+**DIOA0…4 and DIOB0/1 to ground**, as the data sheet allows for unused pins.
+
+Status is shown on the **Elite's own LED (IO38)** by firmware, from PLCA_STS.PST
+(MMS 4, 0xCA03): solid = beacons seen (or link up under CSMA/CD), fast blink = PLCA
+on but no beacons, slow blink = no link.
 
 ## Board rules
 

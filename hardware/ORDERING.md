@@ -56,8 +56,6 @@ placed wrong:
 | L1 | TDK ACT1210L-201-2P-TL00 CMC | C131444 | extended | 3.6 k |
 | CN1 | Phoenix 1803293 MC 1,5/4-G-3,81 (THT) | C480536 | extended | 2.4 k |
 | R7 | 12k4 1 % 0603 | C22865 | extended (no basic exists) | 197 k |
-| D1 | KENTO KT-0603G green LED 0603 | C12624 | extended | 332 k |
-| D2 | KENTO KT-0603Y yellow LED 0603 | C2287 | extended | 80 k (was C89811, down to 20) |
 | R1, R2 (`end/`) | Vishay CRCW120649R9FKEAHP 49R9 1 % 1206 0.75 W | C4014562 | extended | 6.2 k |
 | C1–C3 | 100 nF 100 V X7R 0805 | C28233 | basic | |
 | C4 | 4.7 µF 25 V **X7R** 0805 (CCOMP) — **PROTOTYPE_X7R**: Microchip asks for metal film, see ELECTRICAL.md | C354262 | extended | 581 k |
@@ -67,10 +65,9 @@ placed wrong:
 | C15 C16 | 18 pF C0G 0603 | C1647 | basic | |
 | R3 | 100 k 0805 | C149504 | basic | |
 | R4–R6 | 10 k 0603 | C25804 | basic | |
-| R8 R9 | 1 k 0603 | C21190 | basic | |
 | FB1–FB4 | 0 Ω 0603 (ferrite-bead option) | C21189 | basic | |
 
-7 extended parts, so expect 7 extended-part setup fees. CN1 is through-hole:
+5 extended parts (Rev C dropped the two LEDs), so expect 5 extended-part setup fees. CN1 is through-hole:
 either let JLC fit it (THT assembly fee) or delete its line and hand-solder it.
 
 **Before confirming, still look at JLC's placement preview for these** —
@@ -80,9 +77,7 @@ engineers apply:
 1. **U1 pin 1.** The silkscreen dot/chamfer on the QFN has to match the
    part's pin-1 mark. If it is off by 90° or 180°, fix it in the preview (JLC
    lets you rotate there).
-2. **D1, D2 polarity.** Cathode is pad 1, which goes to the LAN8651's DIOA
-   pin; the anode goes to R8/R9 and 3V3.
-3. **Y1.** Pads 1 and 3 have to be the crystal and 2/4 the lid. The 3225-4P
+2. **Y1.** Pads 1 and 3 have to be the crystal and 2/4 the lid. The 3225-4P
    orientation is symmetric, so a 90° error would put the crystal across the
    lid pads.
 

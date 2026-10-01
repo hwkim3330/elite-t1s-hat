@@ -228,25 +228,21 @@ output are connected"* on U1 pins 20, 22, 23 (DIOA2/3/4) and 16, 14
 exactly what the data sheet says to do — *"When not used, these pins may be
 connected directly to ground."* Nothing is excluded or suppressed.
 
-### DRC — 0 errors, 4 warnings
+### DRC — 0 errors, 0 warnings
 
 Run through `pcbnew.WriteDRCReport()` (same engine; `kicad-cli` has no
 `pcb drc` either). Report as produced: [`drc.rpt`](drc.rpt).
 
 ```
-** Found 4 DRC violations **
+** Found 0 DRC violations **
 ** Found 0 unconnected pads **
 ** Found 0 Footprint errors **
 ```
 
-**Zero errors of any kind** — no clearance, hole, courtyard, keepout,
-solder-mask, silkscreen or unconnected-pad violation. All four remaining
-warnings are the same one:
-
-| count | what |
-|---|---|
-| 4 | `lib_footprint_issues` — the four Ø2.75 mounting holes are generated inline and belong to no footprint library, so the library-consistency test has nothing to compare them to (same as on the earlier adapter board) |
-
+No clearance, hole, courtyard, keepout, solder-mask, silkscreen, unconnected-pad
+or library-consistency finding. (The four mounting holes used to raise
+`lib_footprint_issues`; their footprint is now written into the project library by
+the generator itself, so the board copy and the library copy cannot differ.)
 Nothing is excluded. Running it yourself reproduces exactly this.
 
 ## Inferences — things not taken from the spec files
@@ -371,47 +367,52 @@ file and Microchip's documents before anything changed.
 | Stack height 18–20 vs 23 mm | Stale text in three files. | Fixed: ≈23 mm (calculated) throughout. |
 | Antenna keepout | — | Unchanged. It is empty on purpose. |
 
-## Rev B is frozen
+## Rev C (current) — what changed from Rev B, and why
 
-No further layout changes before hardware exists. Build **2–3 prototypes**
-(the `jlcpcb/end/` variant, 49R9, for a two-node END/END link) and bring them up
-in this order, each step only after the previous one passes:
+Rev B is kept as ordered at the git tag **`rev-b`**. Rev C changes only what the
+bench and the data sheet showed was wrong, and it gets cheaper doing it.
+
+| change | why |
+|---|---|
+| **Status LEDs D1/D2 and R8/R9 removed; DIOA0/1 to ground** | the LAN8651 has **no LED function**: PADCTRL A0SEL/A1SEL offer only event capture / event generator (DS60001734F §11.6.3), so Rev B's LEDs could never have shown PLCA state. Status is on the Elite's own LED (IO38), driven by firmware: solid = beacons seen, fast blink = no beacons, slow blink = no link. **Four parts fewer, two of them extended** (two JLC setup fees) |
+| **VDDA leaves pin 29 through two vias** | Rev B ran it along the outermost top lane, 0.25 mm inside the choke's maximum outline. It now drops to B.Cu beside the pin, below the CMC void, passes under the four lanes to its right and rises at x 33. The verifier's VDDA exception is gone: **nothing but L1's own nets crosses the void, on any layer** |
+| silkscreen "REV C" | |
+
+Considered and **not** done, on purpose:
+
+- **A node-ID DIP / a termination switch.** Physical switches cost money and space,
+  and a bench or harness node is configured once. ID and count stay in firmware
+  (console + NVS, settable over Zenoh); termination stays a choice at order time
+  (`jlcpcb/end/` vs `drop/`), and the 1206 parts are easy to hand-fit later.
+- **A metal-film CCOMP.** No 4.7 µF film capacitor exists in SMD at JLC (only
+  ≥ 22.5 mm-pitch through-hole). C4 stays X7R; the LAN8651 HAT that ran at line
+  rate on the bench (9.5 Mbit/s, 0 loss) is the evidence it works.
+- **Separate 1 mm test pads.** J1's pads are labelled probe points with GND beside
+  them; adding stubs to the SPI lines buys little.
+
+Measured with a LAN8651 HAT on this firmware (2026-10-01): SPI 25 MHz → 9.0 Mbit/s
+PC → node without loss, 9.5 node → PC, ping 0.85 ms; with PLCA no node-side loss in
+any contention test, where CSMA/CD lost up to 27 %. Full report and the design
+lessons behind Rev C: <https://github.com/hwkim3330/t1s-eval>.
+
+### Bring-up order for the first boards
 
 1. Power: 3.3 V rail, then **CCOMP ≈1.8 V** (level and ripple — the X7R check)
 2. SPI: DEVID read (MMS10 0x94)
 3. RESET and IRQ lines
-4. T1S link up
+4. T1S link up — the Elite's LED goes solid once PLCA beacons are seen
 5. PLCA, node 0 and node 1
 6. Ping
-7. UDP throughput — first target 3–5 Mbit/s, 7–9 Mbit/s once tuned
-8. Zenoh
+7. UDP throughput — 9 Mbit/s each way at SPI 25 MHz is what the reference reached
+8. Zenoh (build with `-DT1S_WITH_ZENOH`)
 9. Scope TRXP/TRXN at the connector
 
-Anything found goes into Rev C; Rev B's files stay as ordered.
+**Still a prototype build:** C4 is X7R where Microchip asks for metal film, R1/R2
+are 0.75 W where AN1718 lists 1 W, and L1 is a 200 µH choke outside AN1718's named
+examples. Each is documented in `ELECTRICAL.md`.
 
-**The Rev B order is a prototype build:** C4 is X7R where Microchip asks for
-metal film, R1/R2 are 0.75 W where AN1718 lists 1 W, and L1 is a 200 µH choke
-outside AN1718's named examples. Each is documented in `ELECTRICAL.md`; none is
-for a board that leaves the bench.
-
-### Queued for Rev C (need copper changes, so not in Rev B)
-
-- CCOMP: a land that takes a metal-film part, or a dual MLCC/film footprint
-- real 1 mm test pads for CS_N, SCLK, MOSI, MISO, IRQ_N with GND next to them
-  (Microchip's checklist; Rev B has J1 pads with silkscreen labels only)
-- move the VDDA dogleg (U1 pin 29) out of the choke's outline: it runs along
-  x 29.75 to y 24.9, 0.25 mm inside L1's maximum body, on F.Cu (the void below
-  it, on every other layer, is clean — asserted)
-- a 4-bit PLCA node-ID selector (DIP/straps) read at boot, plus a PLCA on/off position —
-  console/NVS override stays (a harness has no console)
-- termination on a switch or jumper instead of populate-time R1/R2 (one end open made the
-  far node lose beacons on the bench)
-- DIOA0/1 LEDs mapped to PLCA status / activity in firmware
-- keep: LAN8651 MAC-PHY (a LAN8670 PHY behind a separate MAC was starved under load on the
-  bench), SPI routed for 25 MHz (6.0 → 9.0 Mbit/s from 12 → 25 MHz, measured), Pi-HAT pin
-  compatibility (a third-party LAN8651 HAT ran unmodified on this firmware)
-- whatever bring-up on the Rev B boards turns up, including the measured
-  stack height
+Next step after this HAT: a standalone T1S node board (ESP32-S3 + LAN8651 + USB-C
+on one PCB, no stacking), running Zenoh on the node itself.
 
 ## What is NOT verified — read before ordering
 

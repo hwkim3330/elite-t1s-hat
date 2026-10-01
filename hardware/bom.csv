@@ -16,8 +16,6 @@ Comment,Designator,Footprint,Quantity,Populate,Description,LCSC
 10nF,C8,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.01 uF - closest to the pin",C57112
 100nF,C9,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 17) decoupling, 0.1 uF",C14663
 T1S BUS  P N N P,CN1,"Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_P3.81mm_Horizontal",1,fit,"MDI connector, 4-pin 3.81 mm pluggable terminal block. Pins 1..4 = P N N P; the two P and the two N are shorted on board so the node taps a daisy chain.",C480536
-GRN,D1,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 0 on DIOA0 - firmware maps it (e.g. PLCA status),C12624
-YEL,D2,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 1 on DIOA1 - firmware maps it (e.g. activity),C2287
 0R (FB opt.),FB1,Inductor_SMD:L_0603_1608Metric,1,fit,VDDA supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D); may be replaced by a ~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).,C21189
 0R (FB opt.),FB2,Inductor_SMD:L_0603_1608Metric,1,fit,VDDAU supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189
 0R (FB opt.),FB3,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 7) supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189
@@ -33,7 +31,5 @@ YEL,D2,LED_SMD:LED_0603_1608Metric,1,fit,Status LED 1 on DIOA1 - firmware maps i
 10k,R5,Resistor_SMD:R_0603_1608Metric,1,fit,SPI CS_N pull-up,C25804
 10k,R6,Resistor_SMD:R_0603_1608Metric,1,fit,IRQ_N pull-up (open-drain capable interrupt output),C25804
 12k4 1%,R7,Resistor_SMD:R_0603_1608Metric,1,fit,RBIAS. 12.4 kohm 1% over the whole operating temperature range - no substitutions (data sheet).,C22865
-1k,R8,Resistor_SMD:R_0603_1608Metric,1,fit,LED0 series resistor to 3V3 (DIOA0 sinks),C21190
-1k,R9,Resistor_SMD:R_0603_1608Metric,1,fit,LED1 series resistor to 3V3 (DIOA1 sinks),C21190
 LAN8651,U1,Package_DFN_QFN:TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias,1,fit,"Microchip LAN8651 10BASE-T1S MAC-PHY, OPEN Alliance TC6 SPI, 32-VQFN 5x5 (internal 1.8 V core LDO -> single 3.3 V rail)",C22386973
 25.000MHz CL12,Y1,Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm,1,fit,"25.000 MHz fundamental crystal, CL 12 pF, ESR 50 ohm max, SMD3225-4P - YXC X322525MOB4SI. No series or feedback resistor (data sheet).",C9006

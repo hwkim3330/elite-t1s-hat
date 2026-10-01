@@ -219,7 +219,11 @@ U1_NET = {
     8: "RESET_N", 9: "IRQ_N", 10: "SPI_MISO", 11: "SPI_CS_N",
     12: "SPI_SCLK", 13: "SPI_MOSI",
     14: "GND", 16: "GND",          # DIOB1 "connected directly to ground"
-    18: "LED0_K", 19: "LED1_K",
+    # Rev C: DIOA0/1 to ground with DIOA2/3/4.  Rev B hung LEDs on them, but
+    # PADCTRL A0SEL/A1SEL offer only event capture / event generator - the
+    # LAN8651 has no LED function (DS60001734F 11.6.3), so firmware could never
+    # have shown PLCA state there.  Status goes to the Elite's own LED (IO38).
+    18: "GND", 19: "GND",
     20: "GND", 22: "GND", 23: "GND",   # DIOA2/3/4 unused -> ground
     21: "CCOMP",
     24: None,           # WAKE_OUT "should be left unconnected"
@@ -430,20 +434,6 @@ part("R6", "Device:R", "10k", FP_R0603,
      {1: "+3V3", 2: "IRQ_N"}, (25.8, 14.2, 0), (95.0, 115.0),
      descr="IRQ_N pull-up (open-drain capable interrupt output)")
 
-# --- status LEDs -----------------------------------------------------------
-part("R8", "Device:R", "1k", FP_R0603,
-     {1: "+3V3", 2: "LED0_A"}, (47.5, 19, 180), (330.0, 60.0),
-     descr="LED0 series resistor to 3V3 (DIOA0 sinks)")
-part("D1", "Device:LED", "GRN", FP_LED,
-     {2: "LED0_A", 1: "LED0_K"}, (44, 19, 0), (345.0, 60.0),
-     descr="Status LED 0 on DIOA0 - firmware maps it (e.g. PLCA status)")
-part("R9", "Device:R", "1k", FP_R0603,
-     {1: "+3V3", 2: "LED1_A"}, (47.5, 21.5, 180), (330.0, 75.0),
-     descr="LED1 series resistor to 3V3 (DIOA1 sinks)")
-part("D2", "Device:LED", "YEL", FP_LED,
-     {2: "LED1_A", 1: "LED1_K"}, (44, 21.5, 0), (345.0, 75.0),
-     descr="Status LED 1 on DIOA1 - firmware maps it (e.g. activity)")
-
 # LCSC numbers for JLCPCB assembly, each checked against JLCPCB's part search on
 # 2026-09-28 (stock and basic/extended in ORDERING.md).  Parts given one in
 # their part() call keep it.
@@ -459,11 +449,8 @@ LCSC = {
     "R3": "C149504",                      # 100k 0805 1%, basic
     "R4": "C25804", "R5": "C25804", "R6": "C25804",   # 10k 0603, basic
     "R7": "C22865",                       # 12k4 1% 0603, extended (no basic exists)
-    "R8": "C21190", "R9": "C21190",       # 1k 0603, basic
     "FB1": "C21189", "FB2": "C21189", "FB3": "C21189",  # 0R 0603, basic
     "FB4": "C21189",
-    "D1": "C12624",                       # green 0603, extended
-    "D2": "C2287",                        # KENTO KT-0603Y yellow 0603 (C89811 fell to 20 in stock, 2026-09-30)
     "CN1": "C480536",                     # Phoenix 1803293 MC 1,5/4-G-3,81
     "R1": "C4014562", "R2": "C4014562",   # DNP option: 49R9 1% 1206 0.75 W
 }
@@ -785,7 +772,7 @@ SCH_POS = {
     "MOV1": (385, 100), "MOV2": (385, 138), "CN1": (420, 119),
     "Y1": (150, 200), "C15": (133, 210), "C16": (167, 210),
     "R7": (200, 200),
-    "R8": (285, 195), "D1": (305, 195), "R9": (285, 215), "D2": (305, 215),
+
 }
 def snap(v):
     """KiCad's schematic connection grid is 50 mil = 1.27 mm.  Every symbol
@@ -998,8 +985,8 @@ def write_schematic():
     sch_text(120, 228, "CLOCK  25.000 MHz, CL 18 pF.  No series and no "
                        "feedback resistor: the device has ~1 Mohm internally "
                        "across the amplifier.", 1.8, "g4")
-    sch_text(255, 228, "STATUS LEDs on DIOA0/DIOA1 (VDDP domain, 1k to 3V3; "
-                       "the DIO sinks).  DIOA2/3/4 and DIOB0/DIOB1 to ground.",
+    sch_text(255, 228, "DIOA0..4 and DIOB0/DIOB1 to ground: the LAN8651 has "
+                       "no LED function.  Status: the Elite's own LED (IO38).",
              1.8, "g5")
     sch_text(30, 248, "PWR_FLAG: these rails are fed through passive pins "
                       "(header pads, 0R beads), so ERC is told where the "
@@ -1472,10 +1459,18 @@ def build_routes():
     for nm, pin, lane, turn in (("VDDAU", "25", 22.90, 44.00),
                                 ("RBIAS", "26", 23.40, 41.00),
                                 ("XTI",   "27", 23.90, 39.90),
-                                ("XTO",   "28", 24.40, 35.65),
-                                ("VDDA",  "29", 24.90, 33.00)):
+                                ("XTO",   "28", 24.40, 35.65)):
         R((nm, WQ, [("U1", pin), (PADPOS[("U1", pin)][0], lane)]))
         R((nm, WQ, [(PADPOS[("U1", pin)][0], lane), (turn, lane)]))
+    # Rev C: VDDA no longer takes the outermost top lane (Rev B ran it up x = 29.75
+    # to y = 24.9, 0.25 mm inside the choke's maximum outline).  It drops to B.Cu
+    # beside pin 29, below the CMC void, passes under the four lanes to its right
+    # and comes back up at x = 33.00, where its rail to FB1 and the caps starts.
+    R(("VDDA", WQ, [("U1", "29"), (29.75, 23.40)]))
+    G(("VDDA", 29.75, 23.40, 0.45, 0.25))
+    R(("VDDA", WS, [(29.75, 23.40), (32.50, 23.40), (33.00, 23.90), (33.00, 24.90)],
+       pcbnew.B_Cu))
+    G(("VDDA", 33.00, 24.90, 0.45, 0.25))
     R(("VDDA", WP, [(33.00, 24.90), ("FB1", "2")]))
     R(("VDDA", WF, [(33.00, 26.40), ("C12", "1")]))
     R(("VDDA", WF, [(33.00, 28.00), ("C11", "1")]))
@@ -1503,9 +1498,9 @@ def build_routes():
     R(("VDDP_17", WF, [("C10", "1"), ("C9", "1"), ("FB4", "2")]))
     R(("+3V3", WF, [("FB4", "1"), (36.30, 14.10)]))
     G(("+3V3", 36.30, 14.10, 0.45, 0.25))
-    R(("LED0_K", WS, [("U1", "18"), (43.213, 18.75), ("D1", "1")]))
-    R(("LED1_K", WS, [("U1", "19"), (42.00, 19.25), (42.00, 21.50),
-                      ("D2", "1")]))
+    # DIOA0/1 (pins 18/19) join DIOA2's ground escape at x = 33.30
+    R(("GND", WQ, [("U1", "18"), (33.30, 18.75), (33.30, 19.75)]))
+    R(("GND", WQ, [("U1", "19"), (33.30, 19.25)]))
     R(("CCOMP", 0.15, [("U1", "21"), (34.625, 20.25), ("C5", "1")]))
     R(("CCOMP", 0.15, [("C5", "1"), (34.625, 22.40), (38.550, 22.40),
                      ("C4", "1")]))
@@ -1577,13 +1572,9 @@ def build_routes():
     # are through-hole and meet the plane directly.
     for ref, pad, gx, gy in (("FB1", "1", 33.00, 32.05),
                              ("FB2", "1", 44.00, 31.15),
-                             ("R8", "1", 49.40, 19.00),
-                             ("R9", "1", 49.40, 21.50),
                              ("C6", "1", 15.05, 19.30)):
         R(("+3V3", WF, [(ref, pad), (gx, gy)]))
         G(("+3V3", gx, gy, 0.45, 0.25))
-    R(("LED0_A", WS, [("D1", "2"), ("R8", "2")]))
-    R(("LED1_A", WS, [("D2", "2"), ("R9", "2")]))
 
     # ================= ground stitching ===================================
     # Every GND pad that the F.Cu flood cannot reach gets its own via to the
@@ -1739,10 +1730,7 @@ def draw_silk(board):
         x, y = pin_xy(pin)
         add_text(board, txt, x, y - 2.10, h=0.8, w=0.62, th=0.13)
 
-    add_text(board, "LED0 DIOA0", 51.5, 23.5, h=0.8, w=0.7, th=0.13,
-             just="left")
-    add_text(board, "LED1 DIOA1", 51.5, 25.5, h=0.8, w=0.7, th=0.13,
-             just="left")
+    add_text(board, "REV C", 51.5, 24.5, h=1.0, w=0.8, th=0.15, just="left")
 
     # back side: which way up
     add_text(board, "T-ETH-ELITE SIDE", 33.0, 25.0, h=2.0, th=0.32,
@@ -1877,7 +1865,7 @@ def place_references(board):
 def build_pcb():
     NETS.clear()
     board = pcbnew.CreateEmptyBoard()
-    board.SetCopperLayerCount(4)          # Rev B: 4-layer, see README
+    board.SetCopperLayerCount(4)          # 4-layer since Rev B, see README
     bds = board.GetDesignSettings()
     bds.SetBoardThickness(MM(BOARD_T))
     bds.SetAuxOrigin(V(0.0, 0.0))
@@ -2096,11 +2084,9 @@ def verify(board):
         return any(_in_void(pcbnew.VECTOR2I(int(a.x + (b.x - a.x) * k / 20),
                                             int(a.y + (b.y - a.y) * k / 20)))
                    for k in range(21))
-    # F.Cu: L1's own nets, plus one known exception -- the VDDA dogleg from U1
-    # pin 29 runs up x = 29.75 to y 24.9, 0.25 mm inside the choke body's
-    # maximum outline.  Rev B is frozen; moving it is queued for Rev C
-    # (README).  Anything else appearing here fails.
-    f_ok = {"TRXP", "TRXN", "CMC_P", "CMC_N", "VDDA"}
+    # F.Cu: only L1's own nets (Rev C moved the VDDA dogleg that Rev B had to
+    # allow here).  Anything else appearing in the void, on any layer, fails.
+    f_ok = {"TRXP", "TRXN", "CMC_P", "CMC_N"}
     void_hits = [t for t in board.GetTracks() if _crosses(t) and not
                  (t.Type() != pcbnew.PCB_VIA_T and t.GetLayer() == pcbnew.F_Cu
                   and t.GetNetname() in f_ok)]

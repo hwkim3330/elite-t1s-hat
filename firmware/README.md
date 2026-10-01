@@ -138,15 +138,17 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
 
 ## Not done / not verified
 
-- **Nothing has run on hardware.** The pin map is taken from LilyGo's schematic,
-  and the driver is Espressif's, but neither has been tested against this HAT.
-- **The status LEDs (DIOA0/1) are not configured.** `status` prints PADCTRL
-  so its default mux can be seen on real silicon. Which select value turns a
-  DIOA pad into an LED output is a data sheet lookup that was not done here,
-  and guessing a write is not worth the risk.
-- **The 12 MHz default SPI clock is a cautious starting point, not a measurement.**
-  Raise it on the bench and watch for parity errors, the way the W5500 clock
-  was settled on the W5500 bench.
+- **Run on hardware with a third-party LAN8651 HAT, not yet with this board.**
+  TSN Lab's 10BASE-T1S HAT uses the same header pins (SPI0 CE0, IRQ on pin 16), and
+  this firmware drove it unmodified on a T-ETH-Elite: DEVID, PLCA, ping, 9.5 Mbit/s,
+  Zenoh. This HAT's own boards are not built yet.
+- **Status LED:** the LAN8651 has no LED function (its DIOA pins are event
+  capture/generator only), so the firmware drives the Elite's own LED (IO38)
+  from PLCA_STS: solid = beacons seen, fast blink = no beacons, slow blink = no
+  link. Rev C boards have no LEDs of their own.
+- **SPI clock:** 12 MHz is the default; a LAN8651 HAT on this firmware ran clean at
+  **25 MHz** (`spi 25`, `save`, `reboot`): 9.0 Mbit/s to the node and 9.5 from it,
+  against 6.0 / 6.3 at 12 MHz.
 
 ## Zenoh-pico over T1S (optional)
 
