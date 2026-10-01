@@ -402,6 +402,14 @@ for a board that leaves the bench.
 - move the VDDA dogleg (U1 pin 29) out of the choke's outline: it runs along
   x 29.75 to y 24.9, 0.25 mm inside L1's maximum body, on F.Cu (the void below
   it, on every other layer, is clean — asserted)
+- a 4-bit PLCA node-ID selector (DIP/straps) read at boot, plus a PLCA on/off position —
+  console/NVS override stays (a harness has no console)
+- termination on a switch or jumper instead of populate-time R1/R2 (one end open made the
+  far node lose beacons on the bench)
+- DIOA0/1 LEDs mapped to PLCA status / activity in firmware
+- keep: LAN8651 MAC-PHY (a LAN8670 PHY behind a separate MAC was starved under load on the
+  bench), SPI routed for 25 MHz (6.0 → 9.0 Mbit/s from 12 → 25 MHz, measured), Pi-HAT pin
+  compatibility (a third-party LAN8651 HAT ran unmodified on this firmware)
 - whatever bring-up on the Rev B boards turns up, including the measured
   stack height
 
