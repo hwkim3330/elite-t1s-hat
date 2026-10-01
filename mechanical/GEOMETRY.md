@@ -115,7 +115,7 @@ Elite — see the last section.)
 So LilyGo stack their shields at ~13 mm above the base PCB and clear the RJ45
 with a notch. The T1S HAT does not: it is lifted above the jack instead.
 
-## Therefore — the T1S HAT (Rev B)
+## Therefore — the T1S HAT (Rev B, unchanged in Rev C)
 
 | item | value |
 |---|---|

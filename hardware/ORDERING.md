@@ -3,7 +3,7 @@
 What to upload, what to tick, and the three things to look at before paying.
 Stock figures are LCSC's, re-checked on **2026-09-30**.
 
-**For the Rev B prototype run (2–3 boards, END/END link): upload
+**For the Rev C prototype run (2–3 boards, END/END link): upload
 `gerbers/t1s_hat_gerbers.zip`, then `jlcpcb/end/bom_jlc.csv` and
 `jlcpcb/end/cpl_jlc.csv`.** That variant has R1/R2 = 49R9 fitted, which is
 what a two-node bench needs. The sections below explain each choice.
@@ -15,7 +15,7 @@ plus separate PTH/NPTH Excellon and a job file).
 
 | option | value | why |
 |---|---|---|
-| Layers | **4** | Rev B. Signal / GND / 3V3 / signal, see `ELECTRICAL.md` "Board rules" |
+| Layers | **4** | Since Rev B. Signal / GND / 3V3 / signal, see `ELECTRICAL.md` "Board rules" |
 | Stack-up | **JLC04161H-7628** | the one the board file is built for: 0.2104 mm prepreg to each plane |
 | Impedance control | **yes**, 50 Ω single-ended on L1 ref L2, 0.35 mm | the T1S pair (CMC_P/N, BUS_P/N). Optional; without it the pair still sits at ≈50 Ω by design, JLC just doesn't test it |
 | Dimensions | 66.22 × 49.19 mm (JLC reads it from Edge.Cuts) | |
@@ -49,13 +49,15 @@ placed wrong:
 - **CN1** — EasyEDA's origin is the body centre, KiCad's is pin 1: the CPL
   gives the pad centroid, 5.715 mm from KiCad's origin.
 
+Stock = JLC's assembly warehouse, read 2026-10-01 (all 16 lines in stock).
+
 | ref | part | LCSC | JLC class | stock |
 |---|---|---|---|---|
-| U1 | Microchip LAN8651B1-E/LMX, VQFN-32 5×5 | C22386973 | extended | **173: check first** |
-| Y1 | YXC X322525MOB4SI 25 MHz CL12 3225-4P | C9006 | basic | 58 k |
-| L1 | TDK ACT1210L-201-2P-TL00 CMC | C131444 | extended | 3.6 k |
+| U1 | Microchip LAN8651B1-E/LMX, VQFN-32 5×5 | C22386973 | extended | **199: check first** |
+| Y1 | YXC X322525MOB4SI 25 MHz CL12 3225-4P | C9006 | basic | 167 k |
+| L1 | TDK ACT1210L-201-2P-TL00 CMC | C131444 | extended | 3.5 k |
 | CN1 | Phoenix 1803293 MC 1,5/4-G-3,81 (THT) | C480536 | extended | 2.4 k |
-| R7 | 12k4 1 % 0603 | C22865 | extended (no basic exists) | 197 k |
+| R7 | 12k4 1 % 0603 | C22865 | extended (no basic exists) | 224 k |
 | R1, R2 (`end/`) | Vishay CRCW120649R9FKEAHP 49R9 1 % 1206 0.75 W | C4014562 | extended | 6.2 k |
 | C1–C3 | 100 nF 100 V X7R 0805 | C28233 | basic | |
 | C4 | 4.7 µF 25 V **X7R** 0805 (CCOMP) — **PROTOTYPE_X7R**: Microchip asks for metal film, see ELECTRICAL.md | C354262 | extended | 581 k |
@@ -117,5 +119,5 @@ instead of `jlcpcb/`: it is the same BOM/CPL with the R1/R2 lines added.
 
 Eight nodes on one bus means **two end nodes (49R9) and six drop nodes
 (1K5, per `ELECTRICAL.md`)**. Order 10 boards and fit R1/R2 by hand. That is simpler than two
-BOM variants and leaves spares. At 173 in stock (2026-09-30), U1 is the only part that
+BOM variants and leaves spares. At 199 in JLC's stock (2026-10-01), U1 is the only part that
 limits the order quantity.

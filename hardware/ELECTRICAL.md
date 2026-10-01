@@ -222,7 +222,7 @@ on but no beacons, slow blink = no link.
 
 ## Board rules
 
-- **4-layer, 1.6 mm, JLCPCB JLC04161H-7628 (Rev B, 2026-09-28).**
+- **4-layer, 1.6 mm, JLCPCB JLC04161H-7628 (since Rev B, 2026-09-28; unchanged in Rev C).**
   F.Cu signals and parts / In1.Cu solid GND / In2.Cu +3V3 plane / B.Cu the
   three SPI escapes that cannot stay on top, plus a GND pour. AN1718's 50 Ω
   single-ended TRXP/TRXN is **met by construction**: over 0.2104 mm of 7628
