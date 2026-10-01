@@ -27,11 +27,13 @@
 // w5500_spi.h (shared with the W5500 bench firmware) declares this extern; one definition per image.
 W5500Spi *gW5500Spi = nullptr;
 
-// The LAN8651 is rated to 25 MHz SCLK. The riser stack puts ~20 mm of header between the
-// ESP32 and the HAT, so bring-up starts below that; `spi <mhz>` + `save` + `reboot` raises it.
-// The driver checks the parity of every control reply, so a clock the wiring cannot carry
-// shows up as "footer parity mismatch" in the log, not as silent corruption.
-constexpr uint8_t kDefaultSpiMhz = 12;
+// The LAN8651 is rated to 25 MHz SCLK, and every frame crosses this link, so the clock IS the
+// throughput: measured with a LAN8651 HAT on a 2x20 riser, 12 MHz gives 6.0/6.3 Mbit/s, 20 MHz
+// 8.0/8.4, 25 MHz 9.0/9.5 (to/from the node). So 25 is the default, and bring-up steps down
+// (25 -> 20 -> 12 -> 4) by itself if the driver cannot install at a clock -- the driver checks
+// the parity of every control reply, so a clock the wiring cannot carry fails install rather
+// than corrupting silently. `spi <mhz>` + `save` sets the starting clock.
+constexpr uint8_t kDefaultSpiMhz = 25;
 
 // PLCA node ID 255 means "PLCA off, plain CSMA/CD". 0 is the coordinator, which sends the
 // BEACON and whose node count sets the cycle; every bus with PLCA needs exactly one.
@@ -39,7 +41,10 @@ constexpr uint8_t kPlcaOff = 255;
 
 // node:   this board is a T1S endpoint with its own IP (lwIP on the LAN8651)
 // bridge: W5500 100BASE-TX <-> LAN8651 10BASE-T1S learning bridge, no IP (bridge.h)
-enum Mode : uint8_t { kModeNode = 0, kModeBridge = 1 };
+// sniff:  receive-only bus analyser -- every T1S frame copied out of the W5500, PLCA off, no
+//         IP, never transmits on T1S (the converter's "ID >= 1, count 0" mode, on this board)
+enum Mode : uint8_t { kModeNode = 0, kModeBridge = 1, kModeSniff = 2 };
+static const char *modeName(uint8_t m) { return m == kModeBridge ? "bridge" : m == kModeSniff ? "sniff" : "node"; }
 
 struct Config {
   uint8_t mode = kModeNode;
@@ -56,11 +61,13 @@ static esp_eth_handle_t gEth = nullptr;
 static esp_eth_mac_t *gMac = nullptr;
 static esp_netif_t *gNetif = nullptr;
 static volatile bool gLinkUp = false;
+static uint8_t gSpiMhzRunning = 0;   // the clock bring-up actually settled on
 static volatile uint32_t gEchoCount = 0;
 // port 9 (discard) sink: what a peer's `blast` actually delivered here
 static volatile uint32_t gSinkPackets = 0;
 static volatile uint64_t gSinkBytes = 0;
 static volatile uint32_t gSinkT0 = 0, gSinkLast = 0;
+static uint32_t gRebootAtMs = 0;   // a remote `reboot`: delayed so its ack can leave first
 
 // 192.168.50.(10 + id), or .9 with PLCA off. A separate /24 from the W5500 bench
 // (192.168.1.x) so the two interfaces can be up together later without a routing question.
@@ -98,8 +105,11 @@ static void onEthEvent(void *, esp_event_base_t, int32_t id, void *) {
 
 // ---------------------------------------------------------------- PLCA
 
+// A sniffer keeps the saved PLCA settings but never runs them: it must not take a slot.
+static bool plcaWanted() { return gCfg.plcaId != kPlcaOff && gCfg.mode != kModeSniff; }
+
 static esp_err_t applyPlca() {
-  bool enable = gCfg.plcaId != kPlcaOff;
+  bool enable = plcaWanted();
   esp_err_t err = ESP_OK;
   if (enable) {
     uint8_t id = gCfg.plcaId, cnt = gCfg.plcaCount;
@@ -214,37 +224,43 @@ static bool t1sStart(bool withNetif) {
   // <= 25 MHz. CAP_1 is ~10 mA. Raise it back with `spi` tests if edges ever look too slow.
   for (int pin : {kPinT1sSclk, mosi, kPinT1sCs}) gpio_set_drive_capability((gpio_num_t)pin, GPIO_DRIVE_CAP_1);
 
-  spi_device_interface_config_t dev = {};
-  dev.mode = 0;
-  dev.clock_speed_hz = gCfg.spiMhz * 1000 * 1000;
-  dev.spics_io_num = kPinT1sCs;
-  dev.queue_size = 20;
-
-  // Field by field rather than ETH_LAN865X_DEFAULT_CONFIG: that macro lists its designators
-  // out of declaration order, which C accepts and C++ (this file) rejects.
-  eth_lan865x_config_t lanCfg = {};
-  lanCfg.spi_host_id = SPI3_HOST;
-  lanCfg.spi_devcfg = &dev;
-  lanCfg.int_gpio_num = kPinT1sIrq;
-  lanCfg.poll_period_ms = 0;  // interrupt-driven; the driver rejects both or neither
-  lanCfg.custom_spi_driver = ETH_DEFAULT_SPI;
+  // Install at the configured clock; on failure free the driver and step down.
+  static spi_device_interface_config_t dev = {};   // static: the driver keeps a pointer
+  const uint8_t steps[] = {gCfg.spiMhz, 20, 12, 4};
   eth_mac_config_t macCfg = ETH_MAC_DEFAULT_CONFIG();
   eth_phy_config_t phyCfg = ETH_PHY_DEFAULT_CONFIG();
   phyCfg.reset_gpio_num = -1;  // done above
-
-  gMac = esp_eth_mac_new_lan865x(&lanCfg, &macCfg);
-  esp_eth_phy_t *phy = esp_eth_phy_new_lan865x(&phyCfg);
-  if (!gMac || !phy) { Serial.println("t1s: driver alloc failed"); return false; }
-
-  esp_eth_config_t ethCfg = ETH_DEFAULT_CONFIG(gMac, phy);
-  err = esp_eth_driver_install(&ethCfg, &gEth);
-  // This is the line that says whether the board works at all: install runs the chip reset,
-  // reads DEVID and refuses anything but 0x8650/0x8651. (The driver logs its own "Chip ID
-  // verified" through ESP_LOG, which Arduino's default core debug level hides -- so a
-  // failure is reported here and a success by the devid line below.) ESP_ERR_TIMEOUT or
-  // ESP_ERR_INVALID_CRC means SPI never reached the chip: check the riser, CS on IO0, and
-  // try a lower `spi` clock.
-  Serial.printf("t1s: driver install: %s\n", esp_err_to_name(err));
+  for (uint8_t mhz : steps) {
+    if (mhz > gCfg.spiMhz) continue;           // only ever step down from the configured clock
+    dev = {};
+    dev.mode = 0;
+    dev.clock_speed_hz = mhz * 1000 * 1000;
+    dev.spics_io_num = kPinT1sCs;
+    dev.queue_size = 20;
+    // Field by field rather than ETH_LAN865X_DEFAULT_CONFIG: that macro lists its designators
+    // out of declaration order, which C accepts and C++ (this file) rejects.
+    eth_lan865x_config_t lanCfg = {};
+    lanCfg.spi_host_id = SPI3_HOST;
+    lanCfg.spi_devcfg = &dev;
+    lanCfg.int_gpio_num = kPinT1sIrq;
+    lanCfg.poll_period_ms = 0;  // interrupt-driven; the driver rejects both or neither
+    lanCfg.custom_spi_driver = ETH_DEFAULT_SPI;
+    gMac = esp_eth_mac_new_lan865x(&lanCfg, &macCfg);
+    esp_eth_phy_t *phy = esp_eth_phy_new_lan865x(&phyCfg);
+    if (!gMac || !phy) { Serial.println("t1s: driver alloc failed"); return false; }
+    esp_eth_config_t ethCfg = ETH_DEFAULT_CONFIG(gMac, phy);
+    err = esp_eth_driver_install(&ethCfg, &gEth);
+    // This is the line that says whether the board works at all: install runs the chip reset,
+    // reads DEVID and refuses anything but 0x8650/0x8651. ESP_ERR_TIMEOUT or ESP_ERR_INVALID_CRC
+    // means SPI did not reach the chip at this clock: check the riser and CS on IO0.
+    Serial.printf("t1s: driver install at %u MHz: %s\n", mhz, esp_err_to_name(err));
+    if (err == ESP_OK) { gSpiMhzRunning = mhz; break; }
+    gMac->del(gMac);
+    phy->del(phy);
+    gMac = nullptr;
+    gEth = nullptr;
+    gpio_isr_handler_remove((gpio_num_t)kPinT1sIrq);
+  }
   if (err != ESP_OK) return false;
   uint32_t devid = 0;
   if (esp_eth_mac_lan865x_read_reg(gMac, 10, 0x94, &devid) == ESP_OK)
@@ -339,6 +355,69 @@ static void cmdSink(bool reset) {
   if (reset) { gSinkPackets = 0; gSinkBytes = 0; Serial.println("sink: counters reset"); }
 }
 
+// ---------------------------------------------------------------- bus counters
+
+// The LAN8651's MAC is a Cadence GEM behind the TC6 window (MMS 1, word addresses: the Linux
+// lan865x driver's NET_CTL 0x00, NET_CFG 0x01, HASH 0x20, SADDR 0x22 and TSU 0x77 are GEM's
+// byte offsets / 4). GEM's statistics block sits at bytes 0x100..0x1B0, and its counters clear
+// on read, so they are summed here. ASSUMED from that layout, not yet read on a real part:
+// the first `counters` on hardware should show frames tx/rx rising with ping.
+struct GemCounter { uint16_t word; const char *name; };
+static const GemCounter kGem[] = {
+    {0x42, "tx frames"},       {0x4E, "tx 1 collision"},  {0x4F, "tx multi collision"},
+    {0x50, "tx excess coll"},  {0x51, "tx late coll"},    {0x52, "tx deferred"},
+    {0x53, "tx carrier err"},  {0x56, "rx frames"},       {0x64, "rx fcs err"},
+    {0x66, "rx symbol err"},   {0x67, "rx align err"},    {0x68, "rx no buffer"},
+    {0x69, "rx overrun"},
+};
+constexpr int kGemN = sizeof(kGem) / sizeof(kGem[0]);
+static uint64_t gGemSum[kGemN];
+
+static void pollCounters() {
+  if (!gMac) return;
+  for (int i = 0; i < kGemN; i++) {
+    uint32_t v = 0;
+    if (esp_eth_mac_lan865x_read_reg(gMac, 1, kGem[i].word, &v) == ESP_OK) gGemSum[i] += v;
+  }
+}
+
+static void cmdCounters(bool reset) {
+  if (!gMac) { Serial.println("counters: no LAN8651"); return; }
+  pollCounters();
+  for (int i = 0; i < kGemN; i++)
+    Serial.printf("%-20s %llu\n", kGem[i].name, (unsigned long long)gGemSum[i]);
+  // TC6 STATUS0/1 (MMS 0): sticky error flags; BUFSTS: TX credits / RX chunks right now;
+  // PLCA_STS (MMS 4 0xCA03) bit 15 = PST, beacons are being seen.
+  uint32_t st0 = 0, st1 = 0, buf = 0, pst = 0;
+  esp_eth_mac_lan865x_read_reg(gMac, 0, 0x08, &st0);
+  esp_eth_mac_lan865x_read_reg(gMac, 0, 0x09, &st1);
+  esp_eth_mac_lan865x_read_reg(gMac, 0, 0x0B, &buf);
+  esp_eth_mac_lan865x_read_reg(gMac, 4, 0xCA03, &pst);
+  Serial.printf("tc6 status0 0x%08lx status1 0x%08lx  tx credits %lu rx chunks %lu  plca_sts 0x%04lx (%s)\n",
+                (unsigned long)st0, (unsigned long)st1, (unsigned long)((buf >> 8) & 0xFF),
+                (unsigned long)(buf & 0xFF), (unsigned long)(pst & 0xFFFF),
+                !plcaWanted() ? "plca off" : (pst & 0x8000) ? "beacons seen" : "NO beacons");
+  if (reset) { memset(gGemSum, 0, sizeof(gGemSum)); Serial.println("counters: reset"); }
+}
+
+// One line for Zenoh: what the node is running now, read back from the chip.
+static void stateLine(char *out, size_t n, const char *head) {
+  bool en = false;
+  uint8_t id = 0, cnt = 0;
+  if (gEth) {
+    esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_G_EN_PLCA, &en);
+    esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_G_PLCA_ID, &id);
+    esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_G_PLCA_NCNT, &cnt);
+  }
+  esp_netif_ip_info_t ip = {};
+  if (gNetif) esp_netif_get_ip_info(gNetif, &ip);
+  char plca[24];
+  if (en) snprintf(plca, sizeof(plca), "%u/%u", id, cnt);
+  else snprintf(plca, sizeof(plca), "off");
+  snprintf(out, n, "%s | mode=%s plca=%s spi=%u(saved %u) ip=" IPSTR " link=%s", head, modeName(gCfg.mode), plca,
+           gSpiMhzRunning, gCfg.spiMhz, IP2STR(&ip.ip), gLinkUp ? "up" : "down");
+}
+
 // ---------------------------------------------------------------- console commands
 
 static void cmdPing(const char *host, int count) {
@@ -414,10 +493,12 @@ static void cmdReg(bool write, const char *args) {
 static void cmdStatus() {
   esp_netif_ip_info_t ip = {};
   if (gNetif) esp_netif_get_ip_info(gNetif, &ip);
-  Serial.printf("mode: %s\n", gCfg.mode == kModeBridge ? "bridge (W5500 <-> T1S, no IP)" : "node");
+  Serial.printf("mode: %s\n", gCfg.mode == kModeBridge ? "bridge (W5500 <-> T1S, no IP)"
+                              : gCfg.mode == kModeSniff ? "sniff (T1S -> W5500 only, PLCA off, never transmits)"
+                                                        : "node");
   Serial.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz  echo %lu\n", gLinkUp ? "up" : "down",
-                IP2STR(&ip.ip), IP2STR(&ip.netmask), gCfg.spiMhz, (unsigned long)gEchoCount);
-  if (gCfg.mode == kModeBridge) bridge::printStats();
+                IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
+  if (gCfg.mode != kModeNode) bridge::printStats();
   else cmdSink(false);
   if (gEth) printPlca();
   // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads --
@@ -436,7 +517,7 @@ static void cmdStatus() {
 static void help() {
   Serial.println(
       "status                     mode, link, ip, PLCA as read back, chip id, bridge counters\n"
-      "mode node|bridge           T1S endpoint with an IP, or W5500<->T1S bridge (save + reboot)\n"
+      "mode node|bridge|sniff     T1S endpoint, W5500<->T1S bridge, or receive-only sniffer (save + reboot)\n"
       "plca <id> [count]          PLCA node id (0 = coordinator) and node count\n"
       "csma                       PLCA off, plain CSMA/CD\n"
       "ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)\n"
@@ -444,10 +525,11 @@ static void help() {
       "ping <ip> [n]              ICMP over the T1S bus\n"
       "blast <ip> [sec] [bytes] [port]  UDP (default port 9), seq-numbered, reports offered rate\n"
       "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
+      "counters [reset]           MAC frame/collision/error counters, TC6 status, PLCA beacons\n"
       "zenoh                      zenoh-pico session over T1S (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "save / reboot              write config to flash / restart\n"
-      "(UDP echo on port 7 and the discard sink on port 9 always run)");
+      "(UDP echo on port 7 and the discard sink on port 9 always run in node mode)");
 }
 
 static void handleLine(char *line) {
@@ -461,6 +543,7 @@ static void handleLine(char *line) {
   if (!strcmp(cmd, "status")) cmdStatus();
   else if (!strcmp(cmd, "zenoh")) zenohT1sPrintStatus();
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
+  else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "plca") && n >= 1) {
     gCfg.plcaId = atoi(a);
     if (n >= 2) gCfg.plcaCount = atoi(b);
@@ -479,7 +562,7 @@ static void handleLine(char *line) {
     esp_netif_ip_info_t info = {};
     info.ip.addr = gCfg.ip;
     info.netmask.addr = gCfg.mask;
-    esp_netif_set_ip_info(gNetif, &info);
+    if (gNetif) esp_netif_set_ip_info(gNetif, &info);
     cmdStatus();
   } else if (!strcmp(cmd, "spi") && n >= 1) {
     gCfg.spiMhz = constrain(atoi(a), 1, 25);
@@ -493,12 +576,40 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "mode") && n >= 1) {
     if (!strcmp(a, "bridge")) gCfg.mode = kModeBridge;
     else if (!strcmp(a, "node")) gCfg.mode = kModeNode;
-    else { Serial.println("mode node|bridge"); return; }
+    else if (!strcmp(a, "sniff")) gCfg.mode = kModeSniff;
+    else { Serial.println("mode node|bridge|sniff"); return; }
     Serial.printf("mode: %s after save + reboot\n", a);
   }
   else if (!strcmp(cmd, "save")) { saveConfig(); Serial.println("saved"); }
   else if (!strcmp(cmd, "reboot")) ESP.restart();
   else help();
+}
+
+// A command from t1s/<node>/config (Zenoh). Only settings commands -- a remote `blast` or
+// `ping` would hold this task for seconds. The ack is the state read back afterwards, not an
+// echo; `reboot` is delayed a second so the ack leaves first.
+static void runRemoteConfig(const char *text) {
+  static const char *kAllowed[] = {"plca", "csma", "ip", "spi", "mode", "save", "reboot", "status", "counters"};
+  char line[100], first[16] = {};
+  strncpy(line, text, sizeof(line) - 1);
+  line[sizeof(line) - 1] = 0;
+  sscanf(line, "%15s", first);
+  bool ok = false;
+  for (const char *c : kAllowed) ok |= !strcmp(first, c);
+  Serial.printf("zenoh: config \"%s\"%s\n", line, ok ? "" : " -- refused");
+  char ack[200];
+  if (!ok) {
+    snprintf(ack, sizeof(ack), "refused \"%s\" (allowed: plca csma ip spi mode save reboot status counters)", first);
+  } else if (!strcmp(first, "reboot")) {
+    stateLine(ack, sizeof(ack), "ok reboot in 1 s");
+    gRebootAtMs = millis() + 1000;
+  } else {
+    handleLine(line);
+    char head[48];
+    snprintf(head, sizeof(head), "ok %s", first);
+    stateLine(ack, sizeof(ack), head);
+  }
+  zenohT1sAck(ack);
 }
 
 // ---------------------------------------------------------------- Arduino
@@ -509,11 +620,12 @@ void setup() {
   Serial.println("\n== T1S HAT node (LAN8651 on T-ETH-Elite) ==");
   pinMode(kPinBoardLed, OUTPUT);
   loadConfig();
-  const bool isBridge = gCfg.mode == kModeBridge;
-  if (!t1sStart(!isBridge)) {
+  const bool noIp = gCfg.mode != kModeNode;
+  if (!t1sStart(!noIp)) {
     Serial.println("t1s: bring-up FAILED -- console still runs; `spi 4`, `save`, `reboot` to retry slower");
-  } else if (isBridge) {
-    if (!bridge::start(gEth)) Serial.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
+  } else if (noIp) {
+    if (!bridge::start(gEth, gCfg.mode == kModeSniff))
+      Serial.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
   } else {
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
@@ -532,6 +644,12 @@ void loop() {
     if (c == '\n') { line[len] = 0; handleLine(line); len = 0; }
     else if (len < sizeof(line) - 1) line[len++] = c;
   }
+  char remote[100];
+  if (zenohT1sTakeConfig(remote, sizeof(remote))) runRemoteConfig(remote);
+  if (gRebootAtMs && (int32_t)(millis() - gRebootAtMs) >= 0) ESP.restart();
+  // GEM counters clear on read and are 32 bit: fold them into the totals every few seconds
+  static uint32_t tCnt = 0;
+  if (millis() - tCnt > 5000) { tCnt = millis(); pollCounters(); }
   // Board LED (the Elite's own, IO38) shows T1S state -- the LAN8651 has no LED function
   // of its own (its DIOA pins are event capture/generator only):
   //   PLCA on:  solid = beacons seen (PLCA_STS.PST), fast blink = no beacons
@@ -539,7 +657,7 @@ void loop() {
   //   no link:  slow blink
   static uint32_t tPst = 0;
   static bool pst = false;
-  const bool plcaOn = gCfg.plcaId != kPlcaOff;
+  const bool plcaOn = plcaWanted();
   if (plcaOn && gMac && millis() - tPst > 250) {
     tPst = millis();
     uint32_t v = 0;

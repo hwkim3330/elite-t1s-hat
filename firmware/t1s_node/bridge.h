@@ -14,6 +14,12 @@
 // the 10 Mbit bus. Broadcast and multicast are (ARP needs it), so a chatty 100 Mbit segment
 // still costs the T1S bus its broadcast load -- put the bridge on an edge port, not a trunk.
 //
+// Sniff mode (start(t1s, true)) is the same plumbing run one way: every frame seen on the T1S
+// bus is copied out of the W5500, nothing from the W5500 is ever put on the bus, and the
+// caller keeps the LAN8651 in CSMA with no IP, so this node never transmits on T1S. The bus
+// under test sees no extra traffic and no PLCA slot is taken. Wire the W5500 port straight to
+// the capture PC: a switch would learn the T1S stations on this port.
+//
 // One bridge per T1S segment. Two bridges joining the same bus to the same switch fabric make
 // an L2 loop, and this bridge runs no spanning tree.
 #pragma once
@@ -50,6 +56,7 @@ struct Stats {
   volatile uint32_t in[2], fwd[2], local[2], noMem[2], err[2];
 };
 static Stats gStats = {};
+static bool gSniff = false;
 static inline void bump(volatile uint32_t &v) { v = v + 1; }  // one writer per counter
 
 static inline bool isGroup(const uint8_t *mac) { return mac[0] & 1; }
@@ -89,7 +96,14 @@ static int learnAndLookup(const uint8_t *dst, const uint8_t *src, uint8_t side) 
 static esp_err_t input(esp_eth_handle_t, uint8_t *buf, uint32_t len, void *priv) {
   const uint8_t side = (uint8_t)(uintptr_t)priv, other = side ^ 1;
   bump(gStats.in[side]);
-  if (len >= 14) {
+  if (gSniff && side == kTx) {
+    // receive-only analyser: the T1S bus is never written
+  } else if (gSniff) {
+    const esp_err_t e = esp_eth_transmit(gPort[kTx], buf, len);
+    if (e == ESP_OK) bump(gStats.fwd[side]);
+    else if (e == ESP_ERR_NO_MEM) bump(gStats.noMem[side]);
+    else bump(gStats.err[side]);
+  } else if (len >= 14) {
     const int dstSide = learnAndLookup(buf, buf + 6, side);
     if (!isGroup(buf) && dstSide == side) {
       bump(gStats.local[side]);  // both ends on this side: the other bus never sees it
@@ -106,7 +120,8 @@ static esp_err_t input(esp_eth_handle_t, uint8_t *buf, uint32_t len, void *priv)
 
 // Bring the W5500 up with no netif, in promiscuous mode, and join it to an already-running
 // LAN865x handle. Returns false and prints why on any failure.
-inline bool start(esp_eth_handle_t t1s) {
+inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
+  gSniff = sniff;
   spi_bus_config_t bus = {};
   bus.mosi_io_num = kPinEthMosi;
   bus.miso_io_num = kPinEthMiso;
@@ -160,7 +175,9 @@ inline bool start(esp_eth_handle_t t1s) {
     esp_eth_update_input_path(gPort[s], input, (void *)(uintptr_t)s);
   }
   err = esp_eth_start(tx);
-  Serial.printf("bridge: w5500 start: %s -- bridging 100BASE-TX <-> 10BASE-T1S\n", esp_err_to_name(err));
+  Serial.printf("bridge: w5500 start: %s -- %s\n", esp_err_to_name(err),
+                sniff ? "sniffing: T1S frames copied out of the W5500, nothing sent on T1S"
+                      : "bridging 100BASE-TX <-> 10BASE-T1S");
   return err == ESP_OK;
 }
 
@@ -171,6 +188,14 @@ inline void printStats() {
   for (auto &e : gTable)
     if (e.seenMs && now - e.seenMs < kAgeMs) learned[e.side]++;
   portEXIT_CRITICAL(&gLock);
+  if (gSniff) {
+    Serial.printf("sniff: T1S frames seen %lu, copied out %lu, dropped(W5500 busy) %lu err %lu; "
+                  "100BASE-TX frames ignored %lu\n",
+                  (unsigned long)gStats.in[kT1s], (unsigned long)gStats.fwd[kT1s],
+                  (unsigned long)gStats.noMem[kT1s], (unsigned long)gStats.err[kT1s],
+                  (unsigned long)gStats.in[kTx]);
+    return;
+  }
   const char *name[2] = {"100BASE-TX -> T1S", "T1S -> 100BASE-TX"};
   for (int s = 0; s < 2; s++)
     Serial.printf("bridge %s: in %lu fwd %lu kept-local %lu dropped(no TX room) %lu err %lu\n", name[s],

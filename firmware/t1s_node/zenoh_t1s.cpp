@@ -12,6 +12,8 @@
 //   test/ping/<node>    5 Hz   "<seq> <t_us>"; a peer echoes it on test/pong/<node>
 //   test/stats/<node>   1 Hz   RTT over the last second, measured here from the pongs
 //   t1s/<node>/cmd      sub    anything sent here is printed on the console
+//   t1s/<node>/config   sub    a console command (plca/csma/ip/spi/save/reboot/status), run by
+//                              the console task; the result comes back on t1s/<node>/config/ack
 // <node> is "t1s-hat-<PLCA id>".
 #include "zenoh_t1s.h"
 
@@ -29,8 +31,12 @@
 static bool sUp = false, sWanted = true;
 static char sNode[24] = "t1s-hat-0";
 static z_owned_session_t sSession;
-static z_owned_publisher_t sHello, sSignal, sPing, sStats;
-static z_owned_subscriber_t sPong, sCmd;
+static z_owned_publisher_t sHello, sSignal, sPing, sStats, sAck;
+static z_owned_subscriber_t sPong, sCmd, sCfg;
+// one-slot mailboxes between the zenoh task and the console task
+static portMUX_TYPE sMbx = portMUX_INITIALIZER_UNLOCKED;
+static char sCfgIn[100], sAckOut[200];
+static volatile bool sCfgPending = false, sAckPending = false;
 static uint32_t sPingSeq = 0, sHelloSeq = 0, sPongs = 0, sSent = 0;
 static uint32_t sLastPongMs = 0;
 
@@ -71,6 +77,21 @@ static void onCmd(z_loaned_sample_t *sample, void *) {
   z_string_drop(z_string_move(&v));
 }
 
+static void onConfig(z_loaned_sample_t *sample, void *) {
+  z_owned_string_t v;
+  z_bytes_to_string(z_sample_payload(sample), &v);
+  size_t len = z_string_len(z_string_loan(&v));
+  if (len >= sizeof(sCfgIn)) len = sizeof(sCfgIn) - 1;
+  portENTER_CRITICAL(&sMbx);
+  if (!sCfgPending) {
+    memcpy(sCfgIn, z_string_data(z_string_loan(&v)), len);
+    sCfgIn[len] = 0;
+    sCfgPending = true;
+  }
+  portEXIT_CRITICAL(&sMbx);
+  z_string_drop(z_string_move(&v));
+}
+
 static bool declarePub(z_owned_publisher_t &p, const char *ke) {
   z_view_keyexpr_t k;
   z_view_keyexpr_from_str_unchecked(&k, ke);
@@ -100,6 +121,8 @@ static bool start() {
   snprintf(ke, sizeof(ke), "test/stats/%s", sNode);  ok &= declarePub(sStats, ke);
   snprintf(ke, sizeof(ke), "test/pong/%s", sNode);   ok &= declareSub(sPong, ke, onPong);
   snprintf(ke, sizeof(ke), "t1s/%s/cmd", sNode);     ok &= declareSub(sCmd, ke, onCmd);
+  snprintf(ke, sizeof(ke), "t1s/%s/config", sNode);  ok &= declareSub(sCfg, ke, onConfig);
+  snprintf(ke, sizeof(ke), "t1s/%s/config/ack", sNode); ok &= declarePub(sAck, ke);
   Serial.printf("zenoh: session %s\n", ok ? "up" : "declare FAILED");
   return ok;
 }
@@ -113,6 +136,14 @@ void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
     snprintf(sNode, sizeof(sNode), "t1s-hat-%d", plcaId < 0 ? 0 : plcaId);
     sUp = start();
     return;
+  }
+  if (sAckPending) {
+    char out[sizeof(sAckOut)];
+    portENTER_CRITICAL(&sMbx);
+    memcpy(out, sAckOut, sizeof(out));
+    sAckPending = false;
+    portEXIT_CRITICAL(&sMbx);
+    put(sAck, out);
   }
   static uint32_t tPing = 0, tHello = 0, tSig = 0, tStats = 0;
   const uint32_t now = millis();
@@ -157,6 +188,27 @@ void zenohT1sPrintStatus() {
 
 bool zenohT1sAvailable() { return true; }
 
+bool zenohT1sTakeConfig(char *out, size_t n) {
+  bool got = false;
+  portENTER_CRITICAL(&sMbx);
+  if (sCfgPending) {
+    strncpy(out, sCfgIn, n - 1);
+    out[n - 1] = 0;
+    sCfgPending = false;
+    got = true;
+  }
+  portEXIT_CRITICAL(&sMbx);
+  return got;
+}
+
+void zenohT1sAck(const char *text) {
+  portENTER_CRITICAL(&sMbx);
+  strncpy(sAckOut, text, sizeof(sAckOut) - 1);
+  sAckOut[sizeof(sAckOut) - 1] = 0;
+  sAckPending = true;
+  portEXIT_CRITICAL(&sMbx);
+}
+
 struct TaskArgs { volatile bool *up; const uint8_t *id, *cnt; uint8_t off; };
 static TaskArgs sArgs;
 
@@ -179,5 +231,7 @@ void zenohT1sLoop(bool, int, int) {}
 void zenohT1sPrintStatus() { Serial.println("zenoh: not built in (compile with zenoh-pico)"); }
 bool zenohT1sAvailable() { return false; }
 void zenohT1sStartTask(volatile bool *, const uint8_t *, const uint8_t *, uint8_t) {}
+bool zenohT1sTakeConfig(char *, size_t) { return false; }
+void zenohT1sAck(const char *) {}
 
 #endif

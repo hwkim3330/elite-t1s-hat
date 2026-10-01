@@ -46,12 +46,18 @@ T1S ↔ 100BASE-TX bridge.
 
 ## Modes
 
-`mode node|bridge`, then `save` and `reboot`. The mode lives in NVS.
+`mode node|bridge|sniff`, then `save` and `reboot`. The mode lives in NVS.
 
 | mode | what the board is | IP | status |
 |---|---|---|---|
 | **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast` | yes, 192.168.50.x | compiles |
 | **bridge** | a **learning Ethernet bridge** between the Elite's W5500 (100BASE-TX) and the LAN8651 (10BASE-T1S), `bridge.h` | none, managed over USB serial | compiles |
+| **sniff** | a **receive-only bus analyser**: every T1S frame is copied out of the W5500 to a capture PC (Wireshark). PLCA is held off, there is no IP, and nothing is sent on T1S, so the bus under test is not disturbed | none | compiles, not run |
+
+Sniff is the converter's "ID ≥ 1, count 0" mode on this board. Wire the W5500 port
+straight to the capture PC, not through a switch (the switch would learn the T1S
+stations on that port). `status` shows frames seen / copied / dropped. The saved PLCA
+settings are kept and come back when the mode is switched back to node.
 
 Bridge mode is what turns the board into a D10-backbone ↔ T1S-edge gateway.
 T1S nodes behind it reach `zenohd` on the PC as if they were on the switch.
@@ -90,16 +96,32 @@ status                     link, ip, PLCA as read back, chip id, PADCTRL
 plca <id> [count]          PLCA node id (0 = coordinator) and node count
 csma                       PLCA off, plain CSMA/CD
 ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)
-spi <mhz>                  SPI clock 1..25, on reboot (default 12)
+spi <mhz>                  starting SPI clock 1..25, on reboot (default 25, steps down by itself)
 ping <ip> [n]              ICMP over the bus
 blast <ip> [sec] [bytes]   UDP to port 9, reports offered Mbit/s
 sink [reset]               what arrived on this node's port 9, and at what rate
+counters [reset]           MAC frame / collision / error counters, TC6 status, PLCA beacons
 reg r|w <mms> <addr> [val] raw LAN8651 register (hex)
 save / reboot
 ```
 
 Settings live in NVS (`t1s` namespace). A fresh board comes up with **PLCA off
-(CSMA/CD), 192.168.50.9, SPI at 12 MHz**.
+(CSMA/CD), 192.168.50.9, SPI at 25 MHz**.
+
+**SPI clock fallback.** Bring-up tries the saved clock, then 20, 12 and 4 MHz, and keeps the
+first one the driver installs at (the driver checks parity on every control reply, so a clock
+the wiring can't carry fails install instead of corrupting data). The boot log prints each
+attempt, and `status` shows the clock it ended up on. A board that only came up at 12 MHz
+says so without anyone setting `spi 12`.
+
+**Counters.** The LAN8651's MAC is a Cadence GEM. Its statistics clear on read, so the
+firmware adds them up every 5 s and on `counters`. It shows frames tx/rx, single /
+multiple / excessive / late collisions, deferred, carrier errors, and rx FCS / symbol /
+alignment / no-buffer / overrun. It also prints TC6 STATUS0/1, the current TX credits /
+RX chunks, and PLCA_STS (beacons seen or not). The register addresses come from GEM's
+layout, and the Linux driver's MAC registers match that layout. **They have not been read
+on a real part yet.** On first hardware, check that `tx frames` / `rx frames` rise with
+`ping`.
 
 ## First power-up: what each line means
 
@@ -146,9 +168,11 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
   capture/generator only), so the firmware drives the Elite's own LED (IO38)
   from PLCA_STS: solid = beacons seen, fast blink = no beacons, slow blink = no
   link. Rev C boards have no LEDs of their own.
-- **SPI clock:** 12 MHz is the default; a LAN8651 HAT on this firmware ran clean at
-  **25 MHz** (`spi 25`, `save`, `reboot`): 9.0 Mbit/s to the node and 9.5 from it,
-  against 6.0 / 6.3 at 12 MHz.
+- **SPI clock:** 25 MHz is now the default, with the automatic step-down above. A LAN8651
+  HAT on this firmware ran clean at 25 MHz: 9.0 Mbit/s to the node and 9.5 from it,
+  against 6.0 / 6.3 at 12 MHz. The step-down itself has not run on hardware.
+- **Written without hardware (2026-10-01), builds with and without zenoh, never run:**
+  the SPI step-down, `counters`, sniff mode, and Zenoh remote config.
 
 ## Zenoh-pico over T1S (optional)
 
@@ -165,7 +189,18 @@ arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,USBMode=h
 It publishes `t1s/t1s-hat-<id>/hello` (2 Hz), `t1s/t1s-hat-<id>/signal` (20 Hz),
 `test/ping/t1s-hat-<id>` (5 Hz, echoed by a peer on `test/pong/…`) and
 `test/stats/t1s-hat-<id>` (RTT, 1 Hz), and prints anything sent to
-`t1s/t1s-hat-<id>/cmd`. Router locator: `ZENOH_LOCATOR` (default
+`t1s/t1s-hat-<id>/cmd`.
+
+**Remote config:** put a console command on `t1s/t1s-hat-<id>/config`. Allowed commands
+are `plca`, `csma`, `ip`, `spi`, `mode`, `save`, `reboot`, `status` and `counters`;
+`ping` and `blast` are refused, because they would hold the console for seconds. The node
+runs it in the console task and answers on `t1s/t1s-hat-<id>/config/ack` with the state
+read back from the chip, for example
+`ok plca | mode=node plca=1/8 spi=25(saved 25) ip=192.168.50.11 link=up`. `reboot`
+waits a second so its ack gets out first. Changing the PLCA ID moves the node to a
+different key name only after a reboot (the session keeps the name it opened with).
+
+Router locator: `ZENOH_LOCATOR` (default
 `udp/192.168.100.50:7447`). `zenoh` on the console shows the session and RTT.
 Without the flags the file is a stub and the build is unchanged.
 
