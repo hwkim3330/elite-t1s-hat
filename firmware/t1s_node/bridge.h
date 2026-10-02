@@ -29,6 +29,8 @@
 #include <esp_mac.h>
 #include <driver/spi_master.h>
 #include <esp_netif.h>
+#include <esp_heap_caps.h>
+#include <esp_timer.h>
 #include "w5500_spi.h"
 #include "net_console.h"
 
@@ -94,10 +96,45 @@ static int learnAndLookup(const uint8_t *dst, const uint8_t *src, uint8_t side) 
   return found;
 }
 
+// ---- capture: every received frame, us timestamp + first kCapSnap bytes, into PSRAM.
+// `capture start [n]` arms it, `capture dump` prints it as hex lines the console turns into a
+// pcap for Wireshark. Receive side only: with two boards, each one's RX is the other's TX.
+constexpr int kCapSnap = 128;
+struct CapRec { int64_t t; uint16_t len, caplen; uint8_t ifc; uint8_t data[kCapSnap]; };
+static CapRec *gCap = nullptr;
+static volatile uint32_t gCapN = 0, gCapMax = 0, gCapDropped = 0;
+static volatile bool gCapOn = false;
+static int64_t gCapT0 = 0;
+
+inline bool captureStart(uint32_t n) {
+  if (!gCap) gCap = (CapRec *)heap_caps_malloc(sizeof(CapRec) * 8000, MALLOC_CAP_SPIRAM);
+  if (!gCap) return false;
+  gCapOn = false;
+  gCapN = 0;
+  gCapDropped = 0;
+  gCapMax = n < 1 ? 1 : n > 8000 ? 8000 : n;
+  gCapT0 = esp_timer_get_time();
+  gCapOn = true;
+  return true;
+}
+inline void captureRecord(int ifc, const uint8_t *buf, uint32_t len) {
+  if (!gCapOn) return;
+  const uint32_t i = gCapN;
+  if (i >= gCapMax) { gCapDropped = gCapDropped + 1; return; }
+  CapRec &r = gCap[i];
+  r.t = esp_timer_get_time();
+  r.len = len;
+  r.caplen = len < kCapSnap ? len : kCapSnap;
+  r.ifc = ifc;
+  memcpy(r.data, buf, r.caplen);
+  gCapN = i + 1;
+}
+
 // Runs in the receiving driver's own task. The buffer is ours and must be freed on every path.
 static esp_err_t input(esp_eth_handle_t, uint8_t *buf, uint32_t len, void *priv) {
   const uint8_t side = (uint8_t)(uintptr_t)priv, other = side ^ 1;
   bump(gStats.in[side]);
+  captureRecord(side == kTx ? 0 : 1, buf, len);  // bridge / sniff: both ports are captured
   if (gSniff && side == kTx) {
     // receive-only analyser: the T1S bus is never written
   } else if (gSniff) {
@@ -181,6 +218,7 @@ struct RxHdr { uint32_t ms; uint8_t dst[6], src[6]; uint16_t type, len; };
 static RxHdr gRxLog[2][6];
 static volatile uint8_t gRxLogN[2] = {0, 0};
 static esp_err_t countingInput(esp_eth_handle_t h, uint8_t *buf, uint32_t len, void *netif) {
+  captureRecord(h == gNodeTx ? 0 : 1, buf, len);
   RxCount &c = gRx[h == gNodeTx ? 0 : 1];
   c.frames = c.frames + 1;
   const int i = h == gNodeTx ? 0 : 1;
@@ -202,6 +240,22 @@ inline void printRx(int i, const char *name) {
   Con.printf("rx %s: %lu frames (%lu broadcast), last ethertype 0x%04x\n", name, (unsigned long)gRx[i].frames,
              (unsigned long)gRx[i].bcast, gRx[i].lastType);
 }
+// cap <i> <t_us since start> <ifc> <len> <hex of the captured bytes>
+inline void captureDump(uint32_t from, uint32_t count) {
+  const uint32_t n = gCapN;
+  Con.printf("capbegin: n %lu dropped %lu snap %d t0 %lld\n", (unsigned long)n, (unsigned long)gCapDropped,
+             kCapSnap, (long long)gCapT0);
+  static char line[2 * kCapSnap + 64];
+  for (uint32_t i = from; i < n && i < from + count; i++) {
+    const CapRec &r = gCap[i];
+    int o = snprintf(line, sizeof(line), "cap %lu %lld %u %u ", (unsigned long)i, (long long)(r.t - gCapT0), r.ifc, r.len);
+    for (int k = 0; k < r.caplen; k++) o += snprintf(line + o, sizeof(line) - o, "%02x", r.data[k]);
+    Con.println(line);
+    if ((i & 31) == 31) vTaskDelay(1);  // let USB drain
+  }
+  Con.println("capend");
+}
+
 inline void printRxLog(int i, const char *name) {
   const uint8_t n = gRxLogN[i];
   for (int k = n > 6 ? n - 6 : 0; k < n; k++) {

@@ -252,8 +252,15 @@ Measured on the two-ESP bench (2026-10-02, report in `t1s-eval/two-esp/`): pub/s
 median; receive tops out near 1000 msg/s in zenoh-pico; up to 5.5 Mbit/s of payload.
 
 Where the Zenoh round trip goes: raw UDP between the same two boards is 2.97 ms (most of it the
-W5500's 1 ms receive poll on the ESP-B side; PC ↔ HAT measured 0.85 ms), so zenoh-pico adds about
-3 ms. Two changes to this firmware did not move it (median 6.11 → 6.19 / 6.14 ms): echoing a ping
-the moment its callback fires (task notification instead of the 2 ms loop), and publishing ping
-and pong as `is_express`. Both stay, being correct and harmless; the remaining cost is inside
-zenoh-pico's receive/executor path on this port.
+W5500's 1 ms receive poll on the ESP-B side; PC ↔ HAT measured 0.85 ms). Echoing a ping the moment
+its callback fires (task notification instead of the 2 ms loop) and publishing ping/pong as
+`is_express` brought the Zenoh median from 6.14 to **5.20 ms** pinged from ESP-B and from 5.58 to
+**5.26 ms** pinged from the HAT (2026-10-02, 480/449 samples at 50 Hz). The remaining ~2.3 ms over
+raw UDP is inside zenoh-pico. (A first measurement showed no change; the HAT was still running an
+image an earlier OTA had put in the other app slot -- see "Flashing after an OTA".)
+
+### Flashing after an OTA
+
+An OTA writes the *other* app slot and points `otadata` at it. A later USB flash of the app at
+0x10000 alone then does nothing visible: the board keeps booting the OTA'd image. Erase
+`otadata` with it (`esptool erase-region 0xe000 0x2000`), or flash the merged image from 0x0.

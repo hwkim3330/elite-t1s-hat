@@ -646,6 +646,7 @@ static void help() {
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
       "rxlog                      the last frames received: source, destination, type (and this board's MACs)\n"
+      "capture start [n]|stop|dump  record received frames (us time, 128 B) for a pcap\n"
       "phy auto|10f|10h|100f|100h (mode tx) W5500 link mode\n"
       "promisc on|off             accept every frame on the wire (W5500 in tx mode, LAN8651 otherwise)\n"
       "zenoh [pause|resume|ping <hz>|rtts|blast <s> <B>|sink]  zenoh-pico peer over multicast\n"
@@ -682,6 +683,24 @@ static void handleLine(char *line) {
     w5500SpiWrite(gW5500Spi, 0x002E, 1 << 2, &v, 1);
     delay(2500);
     bridge::printPhy();
+  }
+  else if (!strcmp(cmd, "capture")) {
+    // capture start [n] | stop | status | dump [from] [count]
+    if (n >= 1 && !strcmp(a, "start")) {
+      const int cnt = n >= 2 ? atoi(b) : 4000;
+      Con.printf("capture: %s, up to %d frames\n", bridge::captureStart(cnt) ? "armed" : "no PSRAM", cnt);
+    } else if (n >= 1 && !strcmp(a, "stop")) {
+      bridge::gCapOn = false;
+      Con.printf("capture: stopped, %lu frames, %lu not stored\n", (unsigned long)bridge::gCapN,
+                 (unsigned long)bridge::gCapDropped);
+    } else if (n >= 1 && !strcmp(a, "dump")) {
+      unsigned from = 0, count = 100000;
+      sscanf(rest, "%*s %u %u", &from, &count);
+      bridge::captureDump(from, count);
+    } else {
+      Con.printf("capture: %s, %lu frames, %lu not stored\n", bridge::gCapOn ? "running" : "idle",
+                 (unsigned long)bridge::gCapN, (unsigned long)bridge::gCapDropped);
+    }
   }
   else if (!strcmp(cmd, "rxlog")) {
     bridge::printRxLog(0, "w5500");
