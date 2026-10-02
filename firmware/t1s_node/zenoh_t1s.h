@@ -7,7 +7,11 @@ void zenohT1sPrintStatus();
 bool zenohT1sAvailable();
 // Run the loop in its own FreeRTOS task, so a blocked send (e.g. no transmit opportunity on the
 // bus) can never stall the serial console. The pointers are read on every pass.
-void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_t *plcaCount, uint8_t plcaOff);
+// name: fixed node name for the keys, or nullptr for "t1s-hat-<PLCA id>".
+void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_t *plcaCount, uint8_t plcaOff,
+                       const char *name = nullptr);
+// `zenoh ...` console subcommands: status | ping <hz> | rtts [reset] | blast <sec> <bytes> | sink [reset]
+void zenohT1sCommand(const char *args);
 // Remote configuration: a command received on t1s/<node>/config, taken by the console task.
 bool zenohT1sTakeConfig(char *out, size_t n);
 // The console task's answer, published on t1s/<node>/config/ack by the zenoh task.

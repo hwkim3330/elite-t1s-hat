@@ -647,7 +647,7 @@ static void help() {
       "rxlog                      the last frames received: source, destination, type (and this board's MACs)\n"
       "phy auto|10f|10h|100f|100h (mode tx) W5500 link mode\n"
       "promisc on|off             accept every frame on the wire (W5500 in tx mode, LAN8651 otherwise)\n"
-      "zenoh                      zenoh-pico session over T1S (if built in)\n"
+      "zenoh [ping <hz>|rtts|blast <s> <B>|sink]  zenoh-pico peer over multicast (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "wifi [<ssid> <pass> | ap | off]  join a network, own AP t1s-<id>, or no radio (on reboot)\n"
       "ota <pass>                 OTA password (default t1s-ota, on reboot)\n"
@@ -665,7 +665,7 @@ static void handleLine(char *line) {
 
   if (netConsoleCommand(cmd, a, b, n)) return;
   if (!strcmp(cmd, "status")) cmdStatus();
-  else if (!strcmp(cmd, "zenoh")) zenohT1sPrintStatus();
+  else if (!strcmp(cmd, "zenoh")) zenohT1sCommand(rest);
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "phyreset")) bridge::phyReset();
@@ -797,6 +797,12 @@ void setup() {
     else {
       xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
       xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
+      // Zenoh peer on the W5500 too, named after the chip: t1s-eth-<last 2 MAC bytes>
+      static char zname[24];
+      uint8_t m[6];
+      esp_read_mac(m, ESP_MAC_WIFI_STA);
+      snprintf(zname, sizeof(zname), "t1s-eth-%02x%02x", m[4], m[5]);
+      zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff, zname);
     }
   } else if (!t1sStart(!noIp)) {
     Con.println("t1s: bring-up FAILED -- console still runs; `spi 4`, `save`, `reboot` to retry slower");

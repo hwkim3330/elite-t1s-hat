@@ -215,36 +215,31 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
 
 ## Zenoh-pico over T1S (optional)
 
-Build with zenoh-pico on the library path and two flags, and the node opens a Zenoh
-session over the LAN8651's network interface once the bus is up:
+Build with zenoh-pico on the library path and two flags. The node then joins Zenoh over its wired
+interface (T1S on a HAT node, the W5500 in `mode tx`):
 
 ```bash
-F="-DZENOH_ARDUINO_ESP32 -DT1S_WITH_ZENOH"
-arduino-cli compile --fqbn esp32:esp32:esp32s3:PSRAM=opi,FlashSize=16M,USBMode=hwcdc,CDCOnBoot=cdc \
-  --library <path>/zenoh-pico \
+F="-DZENOH_ARDUINO_ESP32 -DT1S_WITH_ZENOH"     # add -DZENOH_ROUTER='"udp/<ip>:7447"' to use a zenohd
+arduino-cli compile --fqbn "$FQBN" --library <path>/zenoh-pico \
   --build-property "compiler.c.extra_flags=$F" --build-property "compiler.cpp.extra_flags=$F" t1s_node
 ```
 
-It publishes `t1s/t1s-hat-<id>/hello` (2 Hz), `t1s/t1s-hat-<id>/signal` (20 Hz),
-`test/ping/t1s-hat-<id>` (5 Hz, echoed by a peer on `test/pong/…`) and
-`test/stats/t1s-hat-<id>` (RTT, 1 Hz), and prints anything sent to
-`t1s/t1s-hat-<id>/cmd`.
+**Default: peer to peer over UDP multicast (`udp/224.0.0.224:7447#iface=eth`), no router.** Two
+boards form a Zenoh network on their own. (`#iface=` is required by zenoh-pico's multicast locator
+check; the ESP32 port ignores its value and lwIP sends from the default netif, the wired one.)
 
-**Remote config:** put a console command on `t1s/t1s-hat-<id>/config`. Allowed commands
-are `plca`, `csma`, `ip`, `spi`, `mode`, `save`, `reboot`, `status` and `counters`;
-`ping` and `blast` are refused, because they would hold the console for seconds. The node
-runs it in the console task and answers on `t1s/t1s-hat-<id>/config/ack` with the state
-read back from the chip, for example
-`ok plca | mode=node plca=1/8 spi=25(saved 25) ip=192.168.50.11 link=up`. `reboot`
-waits a second so its ack gets out first. Changing the PLCA ID moves the node to a
-different key name only after a reboot (the session keeps the name it opened with).
+| key | |
+|---|---|
+| `t1s/<node>/hello`, `/signal`, `test/stats/<node>` | 2 Hz, 20 Hz, 1 Hz |
+| `test/ping/<node>` → `test/pong/<node>` | every board echoes every other board's ping; each measures its own RTT |
+| `t1s/<node>/bulk` | `zenoh blast`, counted by `zenoh sink` on the other board |
+| `t1s/<node>/cmd`, `/config` → `/config/ack` | console text, remote config |
 
-Router locator: `ZENOH_LOCATOR` (default
-`udp/192.168.100.50:7447`). `zenoh` on the console shows the session and RTT.
-Without the flags the file is a stub and the build is unchanged.
+`<node>` is `t1s-hat-<PLCA id>` on a HAT node and `t1s-eth-<mac>` on a W5500-only board.
 
-Measured (2026-10-01, PC ─ 100BASE-TX/10BASE-T1S converter ═ T1S ═ LAN8651 HAT,
-PLCA 2 nodes): SPI 25 MHz gives RTT 0.85 ms (64 B ping, p99 0.99), 9.0 Mbit/s
-PC → node without loss and 9.5 Mbit/s node → PC; SPI 12 MHz gives 6.0 / 6.3 Mbit/s.
-Zenoh ping through the router: ~3.1 ms.
+```
+zenoh [status] | pause | resume | ping <hz> | rtts [reset] | blast <sec> <bytes> | sink [reset]
+```
 
+Measured on the two-ESP bench (2026-10-02, report in `t1s-eval/two-esp/`): pub/sub RTT 5.6–6.0 ms
+median; receive tops out near 1000 msg/s in zenoh-pico; up to 5.5 Mbit/s of payload.
