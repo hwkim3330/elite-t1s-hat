@@ -1,0 +1,10 @@
+(version 1)
+(rule "AN1718 bus spacing: BUS_P/BUS_N to any other net"
+  (constraint clearance (min 0.45mm))
+  (condition "(A.NetName == 'BUS_P' || A.NetName == 'BUS_N') && B.NetName != 'BUS_P' && B.NetName != 'BUS_N'"))
+(rule "MOV1 land (TDK AVRH10 data sheet gap)"
+  (constraint clearance (min 0.15mm))
+  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.intersectsCourtyard('MOV1') && B.intersectsCourtyard('MOV1')"))
+(rule "MOV2 land (TDK AVRH10 data sheet gap)"
+  (constraint clearance (min 0.15mm))
+  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.intersectsCourtyard('MOV2') && B.intersectsCourtyard('MOV2')"))

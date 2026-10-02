@@ -241,6 +241,9 @@ FP_R1206 = "Resistor_SMD:R_1206_3216Metric"
 FP_L0603 = "Inductor_SMD:L_0603_1608Metric"
 FP_LED = "LED_SMD:LED_0603_1608Metric"
 FP_MOV = "t1s_hat:Varistor_TDK_AVRH10_1005"
+# U1: KiCad's TQFN-32 5x5 with its exposed-pad paste redrawn (see u1_footprint)
+U1_FP = "TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias_SplitPaste"
+U1_FP_STOCK = "TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias"
 
 # ---------------------------------------------------------------------------
 # PARTS.  Each entry:
@@ -258,7 +261,7 @@ def part(ref, lib_id, value, fp, nets, pcb, sch, dnp=False, descr="", lcsc=""):
 
 part("U1", "t1s_hat:LAN8651",
      "LAN8651",
-     "Package_DFN_QFN:TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias",
+     "t1s_hat:" + U1_FP,
      U1_NET, (30.0, 20.0, 0), (175.0, 130.0),
      descr="Microchip LAN8651 10BASE-T1S MAC-PHY, OPEN Alliance TC6 SPI, "
            "32-VQFN 5x5 (internal 1.8 V core LDO -> single 3.3 V rail)")
@@ -339,33 +342,33 @@ part("CN1", "Connector_Generic:Conn_01x04", "T1S BUS  P N N P",
 # that is a JLCPCB basic part.  See ELECTRICAL.md, "Clock".
 part("Y1", "Device:Crystal_GND24", "25.000MHz CL12",
      "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm",
-     {1: "XTO", 2: "GND", 3: "XTI", 4: "GND"}, (36.9, 26.2, 0), (120.0, 170.0),
+     {1: "XTO", 2: "GND", 3: "XTI", 4: "GND"}, (34.48, 26.8, 270), (120.0, 170.0),
      lcsc="C9006",
      descr="25.000 MHz fundamental crystal, CL 12 pF, ESR 50 ohm max, "
            "SMD3225-4P - YXC X322525MOB4SI. No series or feedback resistor "
            "(data sheet).")
 part("C15", "Device:C", "18pF", FP_C0603,
-     {1: "XTO", 2: "GND"}, (35.65, 29.4, 90), (104.0, 178.0),
+     {1: "XTO", 2: "GND"}, (31.75, 28.9, 90), (104.0, 178.0),
      descr="Crystal load capacitor C1 (data sheet: C1 = C2 = 18 pF)",
      lcsc="C1647")
 part("C16", "Device:C", "18pF", FP_C0603,
-     {1: "XTI", 2: "GND"}, (38.15, 29.4, 90), (136.0, 178.0),
+     {1: "XTI", 2: "GND"}, (36.95, 25.75, 270), (136.0, 178.0),
      descr="Crystal load capacitor C2 (data sheet: C1 = C2 = 18 pF)",
      lcsc="C1647")
 
 # --- analogue reference ----------------------------------------------------
 part("R7", "Device:R", "12k4 1%", FP_R0603,
-     {1: "RBIAS", 2: "GND"}, (41.0, 26.8, 90), (120.0, 200.0),
+     {1: "RBIAS", 2: "GND"}, (32.0, 24.62, 90), (120.0, 200.0),
      descr="RBIAS. 12.4 kohm 1% over the whole operating temperature range "
            "- no substitutions (data sheet).")
 
 # --- supplies --------------------------------------------------------------
 part("FB1", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
-     {1: "+3V3", 2: "VDDA"}, (33.0, 30.4, 270), (60.0, 60.0),
+     {1: "+3V3", 2: "VDDA"}, (25.2, 25.45, 0), (60.0, 60.0),
      descr="VDDA supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D); may be replaced by a "
            "~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).")
 part("FB2", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
-     {1: "+3V3", 2: "VDDAU"}, (44, 29.5, 270), (60.0, 90.0),
+     {1: "+3V3", 2: "VDDAU"}, (38.0, 21.9, 180), (60.0, 90.0),
      descr="VDDAU supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).")
 part("FB3", "Device:FerriteBead", "0R (FB opt.)", FP_L0603,
      {1: "+3V3", 2: "VDDP"}, (21.5, 18.725, 0), (60.0, 30.0),
@@ -390,20 +393,21 @@ part("C9", "Device:C", "100nF", FP_C0603,
 part("C10", "Device:C", "10nF", FP_C0603,
      {1: "VDDP_17", 2: "GND"}, (34.6, 17.3, 0), (135.0, 45.0),
      descr="VDDP (pin 17) decoupling, 0.01 uF - closest to the pin")
-# C11/C12 sit 0.8 mm further out than the QFN would like so that their ground
-# stitching vias clear the all-layer void under the choke, which grew when L1
-# went to its real 3.2 x 2.5 mm body.
+# Rev C review fix: C11/C12 sit at the top-left corner of U1, fed by a B.Cu hop
+# from pin 29 that passes under the TRXP/TRXN escapes BELOW the choke void (In1
+# ground lies between).  Rev C as first drawn rose at x 33 and reached C12 after
+# ~6.5 mm; the top-right corner now belongs to VDDAU, RBIAS and the crystal.
 part("C11", "Device:C", "100nF", FP_C0603,
-     {1: "VDDA", 2: "GND"}, (32.4, 28, 180), (150.0, 45.0),
+     {1: "VDDA", 2: "GND"}, (25.2, 22.45, 180), (150.0, 45.0),
      descr="VDDA (pin 29) decoupling, 0.1 uF")
 part("C12", "Device:C", "10nF", FP_C0603,
-     {1: "VDDA", 2: "GND"}, (32.4, 26.4, 180), (165.0, 45.0),
+     {1: "VDDA", 2: "GND"}, (25.2, 23.95, 180), (165.0, 45.0),
      descr="VDDA (pin 29) decoupling, 0.01 uF - closest to the pin")
 part("C13", "Device:C", "100nF", FP_C0603,
-     {1: "VDDAU", 2: "GND"}, (47.5, 27.6, 0), (180.0, 45.0),
+     {1: "VDDAU", 2: "GND"}, (34.6, 23.94, 0), (180.0, 45.0),
      descr="VDDAU (pin 25) decoupling, 0.1 uF")
 part("C14", "Device:C", "10nF", FP_C0603,
-     {1: "VDDAU", 2: "GND"}, (47.5, 26, 0), (195.0, 45.0),
+     {1: "VDDAU", 2: "GND"}, (34.6, 22.4375, 0), (195.0, 45.0),
      descr="VDDAU (pin 25) decoupling, 0.01 uF - closest to the pin")
 # CCOMP: the data sheet's body (DS60001734F, power section) and Microchip's hardware
 # design checklist (DS60001746D) both ask for "4.7 uF low ESR (metal film)"; only the
@@ -411,12 +415,12 @@ part("C14", "Device:C", "10nF", FP_C0603,
 # 0805, so C4 is an X7R MLCC: a deliberate deviation for the prototypes, NOT Microchip-
 # compliant, to be checked on the first boards (ELECTRICAL.md, "Bring-up").
 part("C4", "Device:C", "4.7uF X7R", FP_C0805,
-     {1: "CCOMP", 2: "GND"}, (39.5, 20.55, 0), (215.0, 45.0),
+     {1: "CCOMP", 2: "GND"}, (36.3, 20.0, 0), (215.0, 45.0),
      descr="CCOMP: internal +1.8 V core LDO compensation. REQUIRED, low ESR, "
            "to the ground plane (LAN8651 only). Microchip asks for metal film; "
            "X7R MLCC here is a prototype deviation, see ELECTRICAL.md.")
 part("C5", "Device:C", "100nF", FP_C0603,
-     {1: "CCOMP", 2: "GND"}, (35.4, 21, 0), (232.0, 45.0),
+     {1: "CCOMP", 2: "GND"}, (33.85, 19.55, 270), (232.0, 45.0),
      descr="CCOMP support capacitor (data sheet: useful, not required)")
 
 # --- host-side pull-ups ----------------------------------------------------
@@ -504,9 +508,7 @@ def build_lan8651_symbol():
     s = '    (symbol "LAN8651" (in_bom yes) (on_board yes)\n'
     s += _prop("Reference", "U", XL, YT + 2.54, just="left")
     s += _prop("Value", "LAN8651", XL, YT + 5.08, just="left")
-    s += _prop("Footprint",
-               "Package_DFN_QFN:TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm"
-               "_ThermalVias", 0, 0, hide=True)
+    s += _prop("Footprint", "t1s_hat:" + U1_FP, 0, 0, hide=True)
     s += _prop("Datasheet", "https://www.microchip.com/DS60001734", 0, 0,
                hide=True)
     s += _prop("Description",
@@ -674,10 +676,61 @@ def write_footprint_lib():
         [("1", -p, 0, w, h), ("2", p, 0, w, h)],
         crtyd=(0.85, 0.55))
 
+    mods[U1_FP] = u1_footprint()
+
     for name, text in sorted(mods.items()):
         with open(os.path.join(FPDIR, name + ".kicad_mod"), "w") as f:
             f.write(text)
     print("wrote %s (%d footprints)" % (FPDIR, len(mods)))
+
+
+# --- U1: KiCad's TQFN-32 5x5 (3.4 mm EP, nine 0.2 mm thermal vias) with its
+# exposed-pad PASTE redrawn.  Rev C review fix: the stock footprint prints four
+# 1.47 mm paste squares centred at +/-0.85 mm, and every one of them covers the
+# corner via at (+/-1.45, +/-1.45) -- open 0.2 mm vias, so solder wicks down
+# them.  Copper, mask, vias and the 3.4 mm land are unchanged; only F.Paste is
+# replaced by windows that stay EP_PASTE_KEEP clear of every via's 0.5 mm land:
+# an L in each quadrant plus four arms between the centre via and the edge vias.
+EP_VIAS = [(x, y) for x in (-1.45, 0.0, 1.45) for y in (-1.45, 0.0, 1.45)]
+EP_VIA_PAD = 0.50           # the vias' copper land, as in the stock footprint
+EP_PASTE_KEEP = 0.15        # paste window to via land, minimum
+EP_PASTE_INSET = 0.10       # paste window inside the 3.4 mm land edge
+
+
+def ep_paste_windows():
+    """(cx, cy, w, h) of every EP paste window, footprint frame."""
+    k = EP_VIA_PAD / 2 + EP_PASTE_KEEP           # 0.40: via keep-out half-width
+    lo, mid, hi = k, 1.45 - k, 1.70 - EP_PASTE_INSET   # 0.40, 1.05, 1.60
+    arm = 0.25                                   # arm half-width (0.15 to the Ls)
+    out = []
+    for sx in (-1, 1):
+        for sy in (-1, 1):
+            # quadrant L, drawn as two abutting rectangles
+            out.append((sx * (lo + mid) / 2, sy * (lo + hi) / 2, mid - lo, hi - lo))
+            out.append((sx * (mid + hi) / 2, sy * (lo + mid) / 2, hi - mid, mid - lo))
+    for s in (-1, 1):
+        out.append((s * (lo + mid) / 2, 0.0, mid - lo, 2 * arm))
+        out.append((0.0, s * (lo + mid) / 2, 2 * arm, mid - lo))
+    return out
+
+
+def u1_footprint():
+    src = open(os.path.join(KFP + "Package_DFN_QFN.pretty",
+                            U1_FP_STOCK + ".kicad_mod")).read()
+    lines = src.splitlines(True)
+    at = [n for n, l in enumerate(lines) if '(layers F.Paste)' in l]
+    assert len(at) == 4 and at == list(range(at[0], at[0] + 4)), \
+        "stock U1 footprint changed: paste pads at lines %s" % at
+    new = ['  (pad "" smd rect (at %.4f %.4f) (size %.4f %.4f) (layers F.Paste))\n'
+           % w for w in ep_paste_windows()]
+    out = "".join(lines[:at[0]] + new + lines[at[-1] + 1:])
+    out = out.replace("(footprint %s " % U1_FP_STOCK, "(footprint %s " % U1_FP, 1)
+    out = out.replace("(fp_text value %s " % U1_FP_STOCK, "(fp_text value %s " % U1_FP, 1)
+    out = re.sub(r'\(descr "([^"]*)"\)',
+                 lambda m: '(descr "%s; exposed-pad paste split into windows clear '
+                           'of the nine thermal vias (T1S HAT)")' % m.group(1), out, count=1)
+    assert U1_FP in out
+    return out
 
 
 # ===========================================================================
@@ -1018,19 +1071,32 @@ def write_schematic():
 # ===========================================================================
 #  PROJECT + LIBRARY TABLES
 # ===========================================================================
-# Net classes.  DIRECTED: the board is 2-layer, so the T1S pair is a
-# microstrip over the solid B.Cu pour (1.51 mm of FR4).  It is NOT 50 ohm on
-# that stack and is not claimed to be; see README.  The pair still gets its
-# own class so its width, clearance and the AN1718 3x-trace-width spacing rule
-# are enforced by DRC rather than by hand.
+# Net classes.  The board is 4-layer (since Rev B): the T1S pair is a 0.35 mm
+# microstrip over the In1.Cu ground plane, 50 ohm by calculation on JLC's
+# JLC04161H-7628 stack (see STACKUP; not measured).
+#
+# Rev C review fix.  This comment used to say the board was 2-layer and that
+# DRC enforced AN1718's 3x spacing through these classes.  Neither was true:
+# pcbnew.SaveBoard() rewrote the project file with KiCad's own single Default
+# class (0.20 mm), and the assignments here used "/NET" names that match no
+# board net.  What DRC really enforced was 0.20 mm everywhere, which is also
+# what README states.  Now:
+#   * every class is 0.20 mm, the assignments use the board's net names, and
+#     build_pcb() rewrites the project file after SaveBoard() so it survives;
+#     KiCad 7 takes a class's clearance as a minimum and its track width and
+#     via size only as defaults, so the classes cannot loosen anything
+#   * the pair rule is a custom DRC rule (DRU_RULES -> t1s_hat.kicad_dru):
+#     BUS_P/BUS_N keep BUS_SPACING (0.45 mm = 3 x the board's 0.15 mm minimum
+#     track) from every other net, pads, tracks, vias and the F.Cu flood alike.
+#     AN1718's own figure is 3x trace width centre-to-centre to other signals.
 T1S_NETS = ["TRXP", "TRXN", "CMC_P", "CMC_N", "BUS_P", "BUS_N"]
 NETCLASSES = [
-    dict(name="Default", clearance=0.15, track_width=0.25,
+    dict(name="Default", clearance=0.20, track_width=0.25,
          via_diameter=0.60, via_drill=0.30),
-    dict(name="Power", clearance=0.15, track_width=0.45,
+    dict(name="Power", clearance=0.20, track_width=0.45,
          via_diameter=0.70, via_drill=0.35,
          nets=["+3V3", "GND", "VDDP", "VDDP_17", "VDDA", "VDDAU"]),
-    dict(name="T1S", clearance=0.15, track_width=0.35,
+    dict(name="T1S", clearance=0.20, track_width=0.35,
          via_diameter=0.60, via_drill=0.30, nets=T1S_NETS),
 ]
 
@@ -1051,8 +1117,7 @@ def write_project():
             "wire_width": 6,
         })
         for n in nc_.get("nets", []):
-            assign.append([n if n in ("+3V3", "GND") else "/" + n,
-                           nc_["name"]])
+            assign.append([n, nc_["name"]])     # board net names carry no "/"
     pro = {
         "board": {"design_settings": {"defaults": {}}},
         "boards": [],
@@ -1075,6 +1140,27 @@ def write_project():
         json.dump(pro, f, indent=2)
         f.write("\n")
     print("wrote %s" % PRO_PATH)
+    with open(DRU_PATH, "w") as f:
+        f.write(DRU_RULES)
+    print("wrote %s" % DRU_PATH)
+
+
+BUS_SPACING = 0.45
+DRU_PATH = os.path.join(HERE, NAME + ".kicad_dru")
+# Rules later in the file take precedence over earlier ones.  The MOV
+# exception is the TDK AVRH10 land itself: 0.40 mm between its BUS and GND pads
+# by the data sheet (see Varistor_TDK_AVRH10_1005), inside one 1005 part.
+DRU_RULES = """(version 1)
+(rule "AN1718 bus spacing: BUS_P/BUS_N to any other net"
+  (constraint clearance (min %.2fmm))
+  (condition "(A.NetName == 'BUS_P' || A.NetName == 'BUS_N') && B.NetName != 'BUS_P' && B.NetName != 'BUS_N'"))
+(rule "MOV1 land (TDK AVRH10 data sheet gap)"
+  (constraint clearance (min 0.15mm))
+  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.intersectsCourtyard('MOV1') && B.intersectsCourtyard('MOV1')"))
+(rule "MOV2 land (TDK AVRH10 data sheet gap)"
+  (constraint clearance (min 0.15mm))
+  (condition "A.Type == 'Pad' && B.Type == 'Pad' && A.intersectsCourtyard('MOV2') && B.intersectsCourtyard('MOV2')"))
+""" % BUS_SPACING
 
 
 def write_lib_tables():
@@ -1438,12 +1524,16 @@ def build_routes():
                      ("C1", "1")]))
     R(("CMC_N", WT, [("L1", "3"), (28.00, 29.10), (27.50, 29.60),
                      ("C2", "1")]))
-    R(("BUS_P", WT, [("C1", "2"), (29.50, 32.80), (33.46, 32.80),
+    # Rev C review fix: the lanes sit at y 32.65, not 32.80, so they keep the
+    # 0.45 mm bus rule (BUS_SPACING) from R1/R2's BUS_CT pads; the MOV stubs
+    # stop at the near half of the MOV's BUS pad instead of its centre, so
+    # the stub's end keeps the rule from the MOV's own GND pad 0.40 mm away.
+    R(("BUS_P", WT, [("C1", "2"), (29.50, 32.65), (33.46, 32.65),
                      (33.46, 38.40), (30.405, 38.40), ("CN1", "1")]))
-    R(("BUS_N", WT, [("C2", "2"), (27.50, 32.80), (23.54, 32.80),
+    R(("BUS_N", WT, [("C2", "2"), (27.50, 32.65), (23.54, 32.65),
                      (23.54, 38.40), (26.595, 38.40), ("CN1", "2")]))
-    R(("BUS_P", WT, [(33.46, 37.00), ("MOV1", "1")]))
-    R(("BUS_N", WT, [(23.54, 37.00), ("MOV2", "1")]))
+    R(("BUS_P", WT, [(33.46, 37.00), (PADPOS[("MOV1", "1")][0] - 0.10, 37.00)]))
+    R(("BUS_N", WT, [(23.54, 37.00), (PADPOS[("MOV2", "1")][0] + 0.10, 37.00)]))
     R(("BUS_CT", WS, [("R2", "2"), ("R1", "2")]))
     R(("BUS_CT", WS, [(28.50, 34.20), (28.50, 37.00)]))
     R(("BUS_CT", WS, [("C3", "1"), (28.50, 37.00), ("R3", "1")]))
@@ -1454,43 +1544,47 @@ def build_routes():
                      ("CN1", "4")]))
 
     # ================= QFN top edge, right-hand group =====================
-    # One lane per pin; each lane turns up further right than the lane above
-    # it, so no two cross.  Verified by construction, not by eye.
-    for nm, pin, lane, turn in (("VDDAU", "25", 22.90, 44.00),
-                                ("RBIAS", "26", 23.40, 41.00),
-                                ("XTI",   "27", 23.90, 39.90),
-                                ("XTO",   "28", 24.40, 35.65)):
-        R((nm, WQ, [("U1", pin), (PADPOS[("U1", pin)][0], lane)]))
-        R((nm, WQ, [(PADPOS[("U1", pin)][0], lane), (turn, lane)]))
-    # Rev C: VDDA no longer takes the outermost top lane (Rev B ran it up x = 29.75
-    # to y = 24.9, 0.25 mm inside the choke's maximum outline).  It drops to B.Cu
-    # beside pin 29, below the CMC void, passes under the four lanes to its right
-    # and comes back up at x = 33.00, where its rail to FB1 and the caps starts.
+    # Rev C review fixes.  Rev C as first drawn ran VDDAU, RBIAS, XTI and XTO
+    # out in four parallel 0.15 mm lanes 0.35 mm apart for ~9 mm, with C13/C14
+    # 18 mm away and XTI 15.7 mm long.  Now each net ends where it leaves:
+    #   VDDAU (25) leaves its pad sideways, under everything, to C14 then C13
+    #               stacked at the corner (FB2 behind them, off a lane at y 21.35)
+    #   RBIAS (26) goes 1 mm up into R7, which stands on end with its GND pad
+    #               on top, so the crystal lanes cross R7's ground end (and its
+    #               via), never its RBIAS end
+    #   XTI/XTO (27/28) climb past R7 and run straight to Y1 (rotated so XTO
+    #               meets pad 1 from the left and XTI runs through the gap
+    #               between the pad rows into pad 3)
+    # The pins are on a 0.5 mm pitch, so 0.2 mm traces leave each pad directly.
+    R(("VDDAU", WF, [("U1", "25"), ("C14", "1")]))
+    R(("VDDAU", WF, [("C14", "1"), ("C13", "1")]))
+    R(("VDDAU", WF, [("C14", "1"), (33.825, 21.35), (36.90, 21.35),
+                     ("FB2", "2")]))
+    R(("RBIAS", WQ, [("U1", "26"), (31.25, 23.25)]))
+    R(("RBIAS", 0.20, [(31.25, 23.25), (31.60, 23.60), ("R7", "1")]))
+    R(("GND", WF, [("R7", "2"), (32.72, 26.20), ("Y1", "2")]))
+    G(("GND", 32.72, 26.20, 0.45, 0.25))
+    # XTO/XTI step 0.1-0.15 mm right once clear of the pads, so XTO keeps
+    # 0.2 mm from the choke void's edge (x 30.1) on its way up
+    R(("XTI", 0.20, [("U1", "27"), (30.75, 22.95), (30.85, 23.05),
+                     (30.85, 26.80), (35.33, 26.80), ("Y1", "3")]))
+    R(("XTI", 0.20, [(35.33, 26.80), (36.95, 26.80), ("C16", "1")]))
+    R(("XTO", 0.20, [("U1", "28"), (30.25, 23.15), (30.40, 23.30),
+                     (30.40, 27.30), (33.20, 27.30), ("Y1", "1")]))
+    R(("XTO", 0.20, [(31.75, 27.30), ("C15", "1")]))
+    # crystal lid: each GND pad its own via (pad 4 above, pad 2 shares R7's)
+    R(("GND", WF, [("Y1", "4"), (35.33, 29.05)]))
+    G(("GND", 35.33, 29.05, 0.45, 0.25))
+    # VDDA (29): one via beside the pin, B.Cu to the left UNDER the TRXP/TRXN
+    # escapes (y 23.95, 0.45 mm below the CMC void), up again at C12.
     R(("VDDA", WQ, [("U1", "29"), (29.75, 23.40)]))
     G(("VDDA", 29.75, 23.40, 0.45, 0.25))
-    R(("VDDA", WS, [(29.75, 23.40), (32.50, 23.40), (33.00, 23.90), (33.00, 24.90)],
+    R(("VDDA", WS, [(29.75, 23.40), (29.20, 23.95), (26.75, 23.95)],
        pcbnew.B_Cu))
-    G(("VDDA", 33.00, 24.90, 0.45, 0.25))
-    R(("VDDA", WP, [(33.00, 24.90), ("FB1", "2")]))
-    R(("VDDA", WF, [(33.00, 26.40), ("C12", "1")]))
-    R(("VDDA", WF, [(33.00, 28.00), ("C11", "1")]))
-    # 3225 crystal: XTO takes pad 1 (lower left) straight off its lane and
-    # goes round the left of the lid pad to C15; XTI runs up outboard of lid
-    # pad 2 at x = 39.9 and comes in to pad 3 (upper right) from the side.
-    R(("XTO", WS, [(35.65, 24.40), ("Y1", "1")]))
-    R(("XTO", WS, [("Y1", "1"), (34.40, 25.35), (34.40, 28.625),
-                   ("C15", "1")]))
-    R(("XTI", WS, [(39.90, 23.90), (39.90, 27.05), ("Y1", "3")]))
-    R(("XTI", WS, [("Y1", "3"), ("C16", "1")]))
-    # Lid: pad 4 to pad 2 diagonally under the body (0.29 mm to the crystal
-    # pads at the closest corner), then one via beside pad 2.
-    R(("GND", WF, [("Y1", "4"), ("Y1", "2")]))
-    R(("GND", WF, [("Y1", "2"), (39.15, 25.35)]))
-    G(("GND", 39.15, 25.35, 0.45, 0.25))
-    R(("RBIAS", WS, [(41.00, 23.40), ("R7", "1")]))
-    R(("VDDAU", WP, [(44.00, 22.90), ("FB2", "2")]))
-    R(("VDDAU", WF, [(44.00, 26.00), ("C14", "1")]))
-    R(("VDDAU", WF, [(44.00, 27.60), ("C13", "1")]))
+    G(("VDDA", 26.75, 23.95, 0.45, 0.25))
+    R(("VDDA", WF, [(26.75, 23.95), ("C12", "1")]))
+    R(("VDDA", WF, [("C12", "1"), ("C11", "1")]))
+    R(("VDDA", WF, [("C12", "1"), ("FB1", "2")]))
 
     # ================= QFN right edge =====================================
     # VDDP pin 17: its own island, caps at the pin, FB4 from the plane
@@ -1498,20 +1592,15 @@ def build_routes():
     R(("VDDP_17", WF, [("C10", "1"), ("C9", "1"), ("FB4", "2")]))
     R(("+3V3", WF, [("FB4", "1"), (36.30, 14.10)]))
     G(("+3V3", 36.30, 14.10, 0.45, 0.25))
-    # DIOA0/1 (pins 18/19) join DIOA2's ground escape at x = 33.30
-    R(("GND", WQ, [("U1", "18"), (33.30, 18.75), (33.30, 19.75)]))
-    R(("GND", WQ, [("U1", "19"), (33.30, 19.25)]))
-    R(("CCOMP", 0.15, [("U1", "21"), (34.625, 20.25), ("C5", "1")]))
-    R(("CCOMP", 0.15, [("C5", "1"), (34.625, 22.40), (38.550, 22.40),
-                     ("C4", "1")]))
-    # DIOA2/3/4 are unused and go straight to ground (data sheet); each gets
-    # its own stitching via rather than relying on the F.Cu flood reaching
-    # between 0.5 mm-pitch escapes, which it cannot.
-    R(("GND", WQ, [("U1", "20"), (36.90, 19.75), (36.90, 20.20)]))
-    R(("GND", WQ, [("U1", "22"), (33.30, 20.75)]))
-    G(("GND", 33.30, 20.75, 0.45, 0.25))
-    R(("GND", WQ, [("U1", "23"), (33.30, 21.25), (33.30, 21.75)]))
-    G(("GND", 33.30, 21.75, 0.45, 0.25))
+    # DIOA0..4 (18, 19, 20, 22, 23) are unused and go to ground (data sheet).
+    # Rev C review fix: they tie INWARD to the exposed pad, like pins 2/3/5, so
+    # the right edge is free for CCOMP: C5 (100 nF) 1.4 mm from pin 21, C4
+    # (4.7 uF) beside it, each with its own ground via.
+    for pin, y in (("18", 18.75), ("19", 19.25), ("20", 19.75),
+                   ("22", 20.75), ("23", 21.25)):
+        R(("GND", WQ, [("U1", pin), (31.55, y)]))
+    R(("CCOMP", WF, [("U1", "21"), ("C5", "1")]))
+    R(("CCOMP", 0.40, [("C5", "1"), ("C4", "1")]))
 
     # ================= QFN left edge: VDDP (pins 4, 7) and RESET_N ======
     # 0.01 uF (C8) then 0.1 uF (C7) straight off pin 7, FB3 behind them from
@@ -1570,8 +1659,8 @@ def build_routes():
     # Rev A ran a 3V3 rail round three sides of the board; every one of those
     # pads is now a via into the plane beside it.  The header's two 3V3 pins
     # are through-hole and meet the plane directly.
-    for ref, pad, gx, gy in (("FB1", "1", 33.00, 32.05),
-                             ("FB2", "1", 44.00, 31.15),
+    for ref, pad, gx, gy in (("FB1", "1", 23.45, 25.45),
+                             ("FB2", "1", 39.70, 21.90),
                              ("C6", "1", 15.05, 19.30)):
         R(("+3V3", WF, [(ref, pad), (gx, gy)]))
         G(("+3V3", gx, gy, 0.45, 0.25))
@@ -1584,11 +1673,14 @@ def build_routes():
             ("U1", "32", 27.60, 23.20),
             ("C3", "2", 25.15, 35.60), ("R3", "2", 31.812, 35.60),
             ("MOV1", "2", 40.10, 37.00), ("MOV2", "2", 18.50, 37.00),
-            ("C15", "2", 35.65, 30.90), ("C16", "2", 38.15, 30.90),
-            ("R7", "2", 41.00, 28.70), ("C11", "2", 30.70, 28.00),
-            ("C12", "2", 30.70, 26.40), ("C13", "2", 49.10, 27.60),
-            ("C14", "2", 49.10, 26.00), ("C4", "2", 41.40, 20.55, 0.45, 0.25),
-            ("C5", "2", 36.90, 20.20), ("C6", "2", 17.90, 18.00),
+            ("C15", "2", 31.75, 30.60, 0.45, 0.25),
+            ("C16", "2", 37.85, 24.975, 0.45, 0.25),
+            ("C11", "2", 23.50, 22.45, 0.45, 0.25),
+            ("C12", "2", 23.50, 23.95, 0.45, 0.25),
+            ("C13", "2", 36.35, 23.94, 0.45, 0.25),
+            ("C14", "2", 36.35, 22.80, 0.45, 0.25),
+            ("C4", "2", 38.25, 20.00), ("C5", "2", 34.85, 18.70, 0.45, 0.25),
+            ("C6", "2", 17.90, 18.00),
             ("C7", "2", 23.80, 21.25, 0.45, 0.25),
             ("C8", "2", 25.40, 21.25, 0.45, 0.25),
             ("C9", "2", 36.35, 15.70, 0.45, 0.25),
@@ -1718,7 +1810,11 @@ def draw_silk(board):
     # is where JP1 has to sit, and the two collided there.
     px1, py1 = pin_xy(1)
     add_dot(board, pcbnew.F_SilkS, px1 + 2.2, py1, 0.40)
-    add_text(board, "PIN 1", 57.8, 8.6, h=0.9, th=0.14, just="right")
+    add_text(board, "PIN 1 = USB-C END", 57.8, 8.6, h=0.9, th=0.14, just="right")
+    # Rev C review fix: the socket can be pushed on turned 180 deg, which puts
+    # this board's GND (pin 39) on the Elite's 5 V (pin 2).  Say so at the pins.
+    add_text(board, "TURNED 180 = GND ON 5V", 57.8, 9.9, h=0.8, w=0.64, th=0.13,
+             just="right")
     # Probe points: the six host signals plus 3V3 and GND are adjacent pads of
     # J1 (pins 15-24), reachable from the top once the socket is soldered.
     # Labelling them is the test-point set the LAN8650/1 checklist asks for,
@@ -1758,8 +1854,15 @@ REF_TH = 0.12
 
 # Two parts are big enough that the ring around them lands somewhere silly;
 # these spots are tried first and still have to pass the same clearance test.
-REF_HINT = {"J1": (9.0, 8.6), "U1": (25.6, 21.8), "C5": (35.40, 19.20),
-            "R1": (28.2, 33.3), "Y1": (40.69, 22.82), "C12": (36.5, 23.5)}
+# (x, y) or (x, y, angle); angle 90 = reads upward.
+REF_HINT = {"J1": (9.0, 8.6), "U1": (25.6, 21.8), "R1": (28.2, 33.3),
+            "C7": (22.2, 20.4, 90), "C8": (25.4, 17.2),
+            "C11": (21.6, 22.45), "C12": (21.6, 24.2), "FB1": (21.6, 25.95),
+            "L1": (28.5, 26.6), "C15": (31.9, 31.95), "C16": (39.1, 26.0, 90),
+            "Y1": (37.3, 28.5), "C13": (38.9, 23.45)}
+# Parts whose nearest free spot is under some other part: no designator beats a
+# misleading one (C5's would land below U1, beside C9/C10).
+REF_HIDE = {"C5"}
 
 
 def _box(item, grow=0.0):
@@ -1808,6 +1911,10 @@ def place_references(board):
         ref = fp.Reference()
         if not ref.IsVisible():
             continue
+        if fp.GetReference() in REF_HIDE:
+            ref.SetVisible(False)
+            dropped.append(fp.GetReference())
+            continue
         ref.SetTextSize(SZ(*REF_SIZE))
         ref.SetTextThickness(MM(REF_TH))
         pads = list(fp.Pads())
@@ -1824,15 +1931,17 @@ def place_references(board):
         # Horizontal first; a part with no room for a horizontal designator
         # gets a sideways one before it gets none at all.  FP_TEXT angles are
         # relative to the footprint, so the part's own rotation is cancelled.
-        for ang in (0, 90):
+        hint = REF_HINT.get(fp.GetReference())
+        for ang in ((90, 0) if hint and len(hint) > 2 and hint[2] == 90 else (0, 90)):
             ref.SetTextAngle(pcbnew.EDA_ANGLE(
                 ang - fp.GetOrientationDegrees(), pcbnew.DEGREES_T))
             ref.SetPosition(pcbnew.VECTOR2I(int(cx), int(cy)))
             tb = _box(ref)
             tx, ty = (tb[2] - tb[0]) // 2, (tb[3] - tb[1]) // 2
             cand = []
-            if ang == 0 and fp.GetReference() in REF_HINT:
-                v = V(*REF_HINT[fp.GetReference()])
+            hint = REF_HINT.get(fp.GetReference())
+            if hint and (hint[2] if len(hint) > 2 else 0) == ang:
+                v = V(hint[0], hint[1])
                 cand.append((v.x, v.y))
             for gap in (0.30, 0.55, 0.85, 1.25, 1.75, 2.40):
                 for sx, sy in dirs:
@@ -1904,6 +2013,7 @@ def build_pcb():
     add_zones(board)
     draw_silk(board)
     pcbnew.SaveBoard(PCB_PATH, board)
+    write_project()          # SaveBoard just overwrote it with KiCad's defaults
     inject_stackup()
     print("wrote %s (zones not yet filled)" % PCB_PATH)
     fill_zones_gui()
@@ -2121,6 +2231,26 @@ def verify(board):
         row("%s land" % ref, "%.2f x %.2f" % (span_x, span_y),
             "%.2f x %.2f" % (max(xs) - min(xs), max(ys) - min(ys)),
             (max(xs) - min(xs) - span_x, max(ys) - min(ys) - span_y))
+
+    # U1's exposed pad: no paste window may reach a thermal via (Rev C review
+    # fix), read back from the board.  Windows are axis-aligned (U1 at 0 deg).
+    u1 = fps["U1"]
+    holes, wins = [], []
+    for pad in u1.Pads():
+        g = gof(pad.GetPosition())
+        if pad.GetAttribute() == pcbnew.PAD_ATTRIB_PTH:
+            holes.append((g, pcbnew.ToMM(pad.GetSize().x) / 2))
+        elif pad.GetNumber() == "" and pad.IsOnLayer(pcbnew.F_Paste):
+            sz = pad.GetSize()
+            wins.append((g, pcbnew.ToMM(sz.x), pcbnew.ToMM(sz.y)))
+    gap = min(math.hypot(max(abs(h[0] - c[0]) - w / 2, 0), max(abs(h[1] - c[1]) - hh / 2, 0)) - r
+              for (h, r) in holes for (c, w, hh) in wins)
+    cover = sum(w * hh for _, w, hh in wins) / (3.4 * 3.4)
+    row("U1 EP paste", "%d vias, every window >= %.2f off a via land"
+        % (len(holes), EP_PASTE_KEEP),
+        "%d windows, min %.3f, %.0f %% of the land" % (len(wins), gap, 100 * cover),
+        (max(0.0, EP_PASTE_KEEP - gap - 1e-6), float(len(holes) - 9),
+         max(0.0, 0.50 - cover), max(0.0, cover - 0.60)))
 
     # the all-layer void must cover the choke and not much else
     vx0, vy0, vx1, vy1 = CMC_VOID

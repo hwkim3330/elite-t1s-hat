@@ -131,18 +131,20 @@ Two corrections to what the board had before:
   data sheet's 18 pF figure is kept for C15/C16, and the crystal is chosen to
   match it.
 
-**Oscillator margin, as far as it can be computed without the amplifier's
-gm.** The critical transconductance for this crystal is
+**Oscillator margin.** The critical transconductance for this crystal is
 
   gm_crit = 4 · ESR · (2πf)² · (C0 + CL)²
           = 4 · 50 Ω · (2π · 25 MHz)² · (3 pF + 12 pF)² ≈ **1.1 mA/V**
 
-where C0 ≤ 3 pF is taken from YXC's YSX321SL family sheet. A margin of >10
-therefore needs the LAN8651's oscillator gm to be ≥ 11 mA/V. **Microchip does
-not publish that gm**, so the margin cannot be closed on paper. For comparison,
-a CL 18 part would need about twice as much (2.2 mA/V). Measure it on the
-first board: add series resistance until oscillation stops. The resistance at
-which it stops, divided by ESR, is the margin.
+where C0 ≤ 3 pF is taken from YXC's YSX321SL family sheet. The LAN8651's own
+oscillator transconductance is in the data sheet: **DS60001734F §8.6 gives
+18.2 mS (nominal)**. The margin is therefore 18.2 / 1.1 ≈ **16**, above both
+the ≥5 minimum and the >10 target. (An earlier version of this file said
+Microchip does not publish the gm; that was wrong.) For comparison, a CL 18
+part would need about twice as much (2.2 mA/V), a margin of ≈8. 18.2 mS is a
+nominal figure, not a guaranteed minimum, so it is still worth a check on the
+first board: add series resistance until oscillation stops; that resistance
+divided by ESR is the measured margin.
 
 **Frequency error, estimated.** ±10 ppm tolerance + ±20 ppm over temperature,
 plus pulling from the stray-capacitance guess. At ~11 ppm per pF of load error

@@ -22,11 +22,11 @@ There is also a STEP file for CAD work (`t1s_hat.step`).
 | [`firmware/`](firmware/README.md) | ESP32-S3 node firmware: LAN8651 over OPEN Alliance TC6 SPI, PLCA, ping/UDP, serial console |
 | [`mechanical/`](mechanical/GEOMETRY.md) | outline, holes and header grid, measured from LilyGo's own DXF/3D (`reference/measure.py` re-derives them); `model/` has the 3D models (STL, STEP) and their build and render scripts |
 
-## Status (2026-10-01)
+## Status (2026-10-02)
 
 | | |
 |---|---|
-| Design | **Rev C (4-layer) finished, ready to order.** DRC 0 errors, ERC 0 errors, mechanical error 0.00000 mm against `GEOMETRY.md`, 0 unrouted |
+| Design | **Rev C (4-layer) finished, ready to order**, with the pre-fabrication review fixes of 2026-10-02 (CCOMP, VDDAU, VDDA, RBIAS and crystal parts at their pins; exposed-pad paste clear of the thermal vias; see [`hardware/README.md`](hardware/README.md)). DRC 0 errors / 0 warnings, ERC 0 errors, mechanical error 0.00000 mm against `GEOMETRY.md`, 0 unrouted |
 | Parts | every fitted part has an LCSC number, all in stock; **LAN8651 is the scarce one (199 at JLC, 2026-10-01)** |
 | Firmware | compiles (Arduino esp32 3.3.0). It ran on a third-party LAN8651 HAT on the same pins (9.5 Mbit/s, PLCA, Zenoh); **not yet on this board, since none has been built** |
 | Fabricated | **no.** Order 2–3 first, prove SPI + ping + PLCA between two nodes, then the rest |

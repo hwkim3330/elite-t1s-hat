@@ -31,5 +31,5 @@ T1S BUS  P N N P,CN1,"Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_P
 10k,R5,Resistor_SMD:R_0603_1608Metric,1,fit,SPI CS_N pull-up,C25804
 10k,R6,Resistor_SMD:R_0603_1608Metric,1,fit,IRQ_N pull-up (open-drain capable interrupt output),C25804
 12k4 1%,R7,Resistor_SMD:R_0603_1608Metric,1,fit,RBIAS. 12.4 kohm 1% over the whole operating temperature range - no substitutions (data sheet).,C22865
-LAN8651,U1,Package_DFN_QFN:TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias,1,fit,"Microchip LAN8651 10BASE-T1S MAC-PHY, OPEN Alliance TC6 SPI, 32-VQFN 5x5 (internal 1.8 V core LDO -> single 3.3 V rail)",C22386973
+LAN8651,U1,t1s_hat:TQFN-32-1EP_5x5mm_P0.5mm_EP3.4x3.4mm_ThermalVias_SplitPaste,1,fit,"Microchip LAN8651 10BASE-T1S MAC-PHY, OPEN Alliance TC6 SPI, 32-VQFN 5x5 (internal 1.8 V core LDO -> single 3.3 V rail)",C22386973
 25.000MHz CL12,Y1,Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm,1,fit,"25.000 MHz fundamental crystal, CL 12 pF, ESR 50 ohm max, SMD3225-4P - YXC X322525MOB4SI. No series or feedback resistor (data sheet).",C9006
