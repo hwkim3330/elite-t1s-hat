@@ -4,11 +4,11 @@
   (attr exclude_from_pos_files exclude_from_bom)
   (fp_text reference "REF**" (at 0 0) (layer "F.SilkS") hide
       (effects (font (size 1.27 1.27) (thickness 0.15)))
-    (tstamp c5601917-8d8c-484b-b5d7-7e1190c335e1)
+    (tstamp 3e83e01f-21b0-4f7f-a8d3-05f3f2994591)
   )
   (fp_text value "NPTH_2.75mm" (at 0 0) (layer "F.SilkS") hide
       (effects (font (size 1.27 1.27) (thickness 0.15)))
-    (tstamp eb9c9fe1-7a6f-4d18-83d3-239af8f0e999)
+    (tstamp 00695374-52f9-42fe-9a54-fa1740e23fc9)
   )
-  (pad "" np_thru_hole circle (at 0 0) (size 2.75 2.75) (drill 2.75) (layers "F&B.Cu" "*.Mask") (tstamp fd0560e3-d6de-42f4-8b50-864fc7801d17))
+  (pad "" np_thru_hole circle (at 0 0) (size 2.75 2.75) (drill 2.75) (layers "F&B.Cu" "*.Mask") (tstamp 968c2bae-7186-4297-9fcd-b3a050781837))
 )

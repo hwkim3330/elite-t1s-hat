@@ -19,7 +19,7 @@
 //   test/stats/<node>   1 Hz   RTT over the last second, measured here from the pongs
 //   t1s/<node>/bulk            `zenoh blast`: seq-numbered payloads, counted by every other board
 //   t1s/<node>/cmd      sub    anything sent here is printed on the console
-//   t1s/<node>/config   sub    a console command (plca/csma/ip/spi/save/reboot/status), run by
+//   t1s/<node>/config   sub    a console command (plca/csma/ip/spi/mode/save/reboot/status/counters), run by
 //                              the console task; the result comes back on t1s/<node>/config/ack
 // Every board echoes every other board's ping, so with two boards each measures its own RTT.
 #include "zenoh_t1s.h"

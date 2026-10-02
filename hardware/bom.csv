@@ -26,7 +26,7 @@ T1S BUS  P N N P,CN1,"Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_P
 220V(1mA) 1.5pF ESD (DNP) [DNP],MOV2,t1s_hat:Varistor_TDK_AVRH10_1005,1,DNP,"ESD element on bus N, at the connector (AN1718 MOV2) - TDK AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.",C2157827
 49R9 1% (DNP) [DNP],R1,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, P leg. 49R9 1% for an END node (AN1718: 1 W; the orderable part is 0.75 W, see ORDERING.md), 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
 49R9 1% (DNP) [DNP],R2,Resistor_SMD:R_1206_3216Metric,1,DNP,"Bus termination, N leg. 49R9 1% for an END node (AN1718: 1 W; the orderable part is 0.75 W, see ORDERING.md), 1K5 1% for a DROP node. Shipped unstuffed - see README.",C4014562
-100k 5%,R3,Resistor_SMD:R_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 R3)",C149504
+100k 1%,R3,Resistor_SMD:R_0805_2012Metric,1,fit,"Common-mode termination, centre tap to ground (AN1718 R3)",C149504
 10k,R4,Resistor_SMD:R_0603_1608Metric,1,fit,RESET_N pull-up: a floating host GPIO during ESP32 boot must not hold the PHY in reset,C25804
 10k,R5,Resistor_SMD:R_0603_1608Metric,1,fit,SPI CS_N pull-up,C25804
 10k,R6,Resistor_SMD:R_0603_1608Metric,1,fit,IRQ_N pull-up (open-drain capable interrupt output),C25804

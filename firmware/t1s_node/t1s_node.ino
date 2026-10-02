@@ -6,7 +6,8 @@
 // board: the pin map (pins.h), the reset line, the IRQ line's pull, PLCA, and a serial
 // console for the bench.
 //
-// Nothing here has run on hardware yet. Every place a first power-up could go wrong prints
+// Runs on T-ETH-Elite boards (with a third-party LAN8651 HAT; this board is not built yet).
+// Every place a first power-up could go wrong prints
 // what it saw rather than failing silently -- the chip ID, the SPI error, PLCA as read back.
 #include <Arduino.h>
 #include <algorithm>
@@ -616,9 +617,9 @@ static void cmdStatus() {
   else if (gCfg.mode == kModeNode) bridge::printRx(1, "t1s");
   netConsolePrintStatus();
   if (gEth) printPlca();
-  // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads --
-  // the two LEDs on this board -- are currently muxed. PADCTRL is printed, not written: which
-  // select value means "LED" is a data sheet lookup that has not been done against a real part.
+  // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads are
+  // muxed. Printed, never written: A0SEL/A1SEL offer only event capture / event generator
+  // (DS60001734F 11.6.3) -- the LAN8651 has no LED function, so Rev C ties the pads to ground.
   if (gMac) {
     uint32_t v;
     if (esp_eth_mac_lan865x_read_reg(gMac, 10, 0x94, &v) == ESP_OK)
@@ -647,7 +648,7 @@ static void help() {
       "rxlog                      the last frames received: source, destination, type (and this board's MACs)\n"
       "phy auto|10f|10h|100f|100h (mode tx) W5500 link mode\n"
       "promisc on|off             accept every frame on the wire (W5500 in tx mode, LAN8651 otherwise)\n"
-      "zenoh [ping <hz>|rtts|blast <s> <B>|sink]  zenoh-pico peer over multicast (if built in)\n"
+      "zenoh [pause|resume|ping <hz>|rtts|blast <s> <B>|sink]  zenoh-pico peer over multicast\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "wifi [<ssid> <pass> | ap | off]  join a network, own AP t1s-<id>, or no radio (on reboot)\n"
       "ota <pass>                 OTA password (default t1s-ota, on reboot)\n"

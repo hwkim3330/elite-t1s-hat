@@ -57,7 +57,7 @@ though the shop listing says LAN8650).
 | DNC (6, 15) | "must be left floating externally" | no connect, no copper stub |
 | WAKE_IN (32) | "When not used, this pin should be connected to VSS." | to GND (VDDAU domain) |
 | WAKE_OUT (24) | "When not used, this pin should be left unconnected." | NC |
-| DIOA0-4, DIOB0 | "When not used, these pins may be connected directly to ground." | see LEDs below; the rest to GND |
+| DIOA0-4, DIOB0 | "When not used, these pins may be connected directly to ground." | all to GND (Rev C: no LEDs; the LAN8651 has no LED function) |
 | RESET_N (8) | "When not used, this pin must be connected directly to VDDP." | driven from the host **plus** a 10 k pull-up to 3V3, so a floating GPIO during ESP32 boot cannot hold the PHY in reset |
 | RBIAS (26) | "requires connection of a 12.4 kΩ resistor to ground… within ±1% across the entire expected operating temperature range" | **12.4 kΩ 1 %**, no substitutions |
 
@@ -117,7 +117,7 @@ and at least 5 — a crystal with low ESR and the right CL matters here.
 
 **Y1 = YXC X322525MOB4SI, LCSC C9006**: 25.000 MHz, **CL 12 pF**, ESR 50 Ω
 max, ±10 ppm at 25 °C, ±20 ppm over −40…+85 °C, SMD3225 **4-pad** (1/3
-crystal, 2/4 lid → GND). JLCPCB basic part, ~74 k in stock.
+crystal, 2/4 lid → GND). JLCPCB basic part, 167 k in JLC's stock on 2026-10-01.
 
 Two corrections to what the board had before:
 
@@ -171,7 +171,7 @@ SPI clock up to 25 MHz. Protocol is OPEN Alliance TC6.
 
 The ESP32 column is read off LilyGo's own schematic (`schematic/T-ETH-ELite.pdf`
 in `Xinyuan-LilyGO/LilyGO-T-ETH-Series`, sheet 2, connector J1), and it is
-mirrored in [`firmware/t1s_node/pins.h`](firmware/t1s_node/pins.h). Two
+mirrored in [`firmware/t1s_node/pins.h`](../firmware/t1s_node/pins.h). Two
 consequences of it:
 
 - **CS_N lands on IO0, the ESP32-S3's BOOT strap.** That is where a Pi puts
@@ -203,7 +203,7 @@ TRXP/TRXN ─ CMC(L1) ─ C1/C2 100nF ─ [R1/R2 termination] ─ [ESD] ─ CN1
 | L1 | common-mode choke, **200 µH @ 100 kHz — TDK ACT1210L-201-2P-TL00** (LCSC C131444), ACT1210 package | **always populated.** AN1718's examples are ACT1210D-131 (130 µH), ACT1210E-241 / Murata DLW32MH241MX2 (240 µH); the note leaves the choice to the application. 200 µH sits inside that span, is AEC-Q200 and was the one in stock: a **prototype-selected alternative, EMC validation pending**. The land fits all three. |
 | C1, C2 | 0.1 µF, 100 V, 0805 | DC block / galvanic isolation. **Always populated, on every node.** |
 | R1, R2 | **49.9 Ω 1 % 1206** for an END-OF-BUS node — AN1718 lists **1 W**; the part ordered is **0.75 W** (C4014562), a lab-prototype substitution because no 1 W 1206 was stocked (ORDERING.md). Fit a 1 W part (Susumu HRG3216P, Vishay PHP01206) by hand for anything past the bench.<br>**1.5 kΩ 1 % 1206** for an interior DROP node | footprints fitted, **DNP by default** — stuff per where this node sits on the bus |
-| R3 | 100 kΩ 5 % 0805 + C3 | common-mode termination (drop node), per AN1718's drop-node topology |
+| R3 | 100 kΩ 1 % 0805 + C3 | common-mode termination (drop node), per AN1718's drop-node topology |
 | MOV1/2 | TDK AVRH10C221KT1R5YA8 or Panasonic EZA-EG3W11AV | ESD, optional, footprint by the connector |
 | CN1 | 4-pin 3.81 mm pluggable terminal block | P_in/N_in + P_out/N_out, the two P's and the two N's shorted on board so the node taps a daisy chain |
 

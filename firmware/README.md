@@ -5,9 +5,10 @@
 10BASE-T1S unchanged. It is the bring-up tool for the first board and the
 base that a larger node firmware can fold in beside the W5500.
 
-**Status: compiles, never run.** No HAT has been built yet, and no Elite was
-attached when this was written. Every stage a first power-up can fail at
-prints what it saw; see "First power-up" below.
+**Status: runs on hardware** (three T-ETH-Elite boards, with a third-party LAN8651 HAT on
+the same header pins; see "Not done / not verified" for exactly what ran). This HAT's own
+board has not been built yet. Every stage a first power-up can fail at prints what it saw;
+see "First power-up" below.
 
 ## Build and flash
 
@@ -51,10 +52,10 @@ arduino-cli upload --fqbn "$FQBN" --protocol network --port <board-ip> \
 ```
 
 The WiFi console uses a different subnet from the T1S / W5500 side, so test traffic never
-goes over WiFi by accident. The bench console (`esp32-t1s-bridge`, :8813) finds the boards by
-mDNS, or takes them by IP.
+goes over WiFi by accident. A bench console can find the boards by mDNS (`_telnet._tcp`,
+`t1s-*`), or take them by IP.
 
-Built here: 580 KB flash (44 %). No warnings from the sketch, the bridge or
+Built here (2026-10-02): 1.07 MB without zenoh, 1.17 MB with it (34 % / 37 % of a 3 MB slot). No warnings from the sketch, the bridge or
 the LAN865x driver. The copied `w5500_spi.h` shows its original volatile-`++`
 warnings.
 
@@ -79,13 +80,13 @@ T1S ↔ 100BASE-TX bridge.
 
 ## Modes
 
-`mode node|bridge|sniff`, then `save` and `reboot`. The mode lives in NVS.
+`mode node|bridge|sniff|tx`, then `save` and `reboot`. The mode lives in NVS.
 
 | mode | what the board is | IP | status |
 |---|---|---|---|
-| **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast` | yes, 192.168.50.x | compiles |
+| **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast` | yes, 192.168.50.x | **run** |
 | **bridge** | a **learning Ethernet bridge** between the Elite's W5500 (100BASE-TX) and the LAN8651 (10BASE-T1S), `bridge.h` | none, managed over USB serial | compiles |
-| **tx** | **no LAN8651:** the Elite's W5500 as an ordinary IP endpoint (echo, sink, `blast`, `ping`), default 192.168.100.66. This is the second board of a two-ESP bench, in the PC's place on the converter's 100BASE-TX port | yes, W5500 | compiles, not run |
+| **tx** | **no LAN8651:** the Elite's W5500 as an ordinary IP endpoint (echo, sink, `blast`, `ping`), default 192.168.100.66. This is the second board of a two-ESP bench, in the PC's place on the converter's 100BASE-TX port | yes, W5500 | **run** |
 | **sniff** | a **receive-only bus analyser**: every T1S frame is copied out of the W5500 to a capture PC (Wireshark). PLCA is held off, there is no IP, and nothing is sent on T1S, so the bus under test is not disturbed | none | compiles, not run |
 
 Sniff is the converter's "ID ≥ 1, count 0" mode on this board. Wire the W5500 port
@@ -142,6 +143,10 @@ phyreset                   (mode tx) W5500 PHY reset with autonegotiation
 phy auto|10h|10f|100h|100f (mode tx) W5500 link mode, written to PHYCFGR
 rxlog                      last received frames: source, destination, type
 reg r|w <mms> <addr> [val] raw LAN8651 register (hex)
+mode node|bridge|sniff|tx  what the board is (save + reboot)
+wifi [<ssid> <pass>|ap|off] WiFi station / own AP / no radio (on reboot)
+ota <pass>                 OTA password (on reboot)
+zenoh [status|pause|resume|ping <hz>|rtts|blast <s> <B>|sink]
 save / reboot
 ```
 

@@ -33,7 +33,7 @@ corner, +x right, +y up.** All units mm.
 | `DXF` | LilyGo 2D mechanical DXF | `shell/T-ETH-ELite.dxf`, github.com/Xinyuan-LilyGO/LilyGO-T-ETH-Series |
 | `CAD` | LilyGo 3D model of the base board | `shell/3D/T-ETH-ELite.7z` → `T-ETH-ELite.stl`, same repo |
 | `SHLD` | LilyGo 3D model of their own LoRa shield | `shell/3D/T-ETH-ELite-LoRa-Shield.7z`, same repo |
-| `RIG` | `/home/kim/stl-model/acrylic-frame/make_plates.py` — the same hole set, **physically validated**: a real board was offered up to a laser-cut plate and sat centred on its holes (see that repo's `CUTTING.md`) |
+| `RIG` | a laser-cut acrylic mounting plate generated from the same hole set, **physically validated**: a real board was offered up to the plate and sat centred on its holes |
 
 ## T-ETH-Elite base board
 

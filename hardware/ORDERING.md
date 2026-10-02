@@ -1,7 +1,7 @@
 # Ordering the T1S HAT at JLCPCB
 
 What to upload, what to tick, and the three things to look at before paying.
-Stock figures are LCSC's, re-checked on **2026-09-30**.
+Stock figures are JLC's assembly warehouse, re-checked on **2026-10-01**.
 
 **For the Rev C prototype run (2–3 boards, END/END link): upload
 `gerbers/t1s_hat_gerbers.zip`, then `jlcpcb/end/bom_jlc.csv` and
@@ -22,7 +22,7 @@ plus separate PTH/NPTH Excellon and a job file).
 | Thickness | **1.6 mm** | |
 | Material | FR-4 | |
 | Outer / inner copper | 1 oz / 0.5 oz | JLC's default for that stack-up |
-| Min track / space | 0.15 / 0.15 mm | the generator's rules; inside JLC standard |
+| Min track / space | 0.15 / 0.20 mm | 0.15 mm tracks (SPI escapes), 0.20 mm clearance from the net classes; the bus pair keeps 0.45 mm to other nets (`t1s_hat.kicad_dru`); inside JLC standard |
 | Min hole | 0.20 mm | U1's exposed-pad thermal vias |
 | Surface finish | **ENIG** recommended, lead-free HASL works | 0.5 mm-pitch QFN and 0402 lands sit flatter on ENIG |
 | Via covering | tented | |
@@ -49,7 +49,7 @@ placed wrong:
 - **CN1** — EasyEDA's origin is the body centre, KiCad's is pin 1: the CPL
   gives the pad centroid, 5.715 mm from KiCad's origin.
 
-Stock = JLC's assembly warehouse, read 2026-10-01 (all 16 lines in stock).
+Stock = JLC's assembly warehouse, read 2026-10-01 (all 15 lines of the `end/` BOM in stock).
 
 | ref | part | LCSC | JLC class | stock |
 |---|---|---|---|---|
@@ -65,11 +65,11 @@ Stock = JLC's assembly warehouse, read 2026-10-01 (all 16 lines in stock).
 | C5 C7 C9 C11 C13 | 100 nF 0603 | C14663 | basic | |
 | C8 C10 C12 C14 | 10 nF 0603 | C57112 | basic | |
 | C15 C16 | 18 pF C0G 0603 | C1647 | basic | |
-| R3 | 100 k 0805 | C149504 | basic | |
+| R3 | 100 k 1 % 0805 | C149504 | basic | |
 | R4–R6 | 10 k 0603 | C25804 | basic | |
 | FB1–FB4 | 0 Ω 0603 (ferrite-bead option) | C21189 | basic | |
 
-5 extended parts (Rev C dropped the two LEDs), so expect 5 extended-part setup fees. CN1 is through-hole:
+**6 extended parts with `end/` or `drop/`** (U1, L1, CN1, R7, C4 and R1/R2), 5 with the unfitted `jlcpcb/` BOM; Rev C dropped the two LEDs. Expect one setup fee per extended part. CN1 is through-hole:
 either let JLC fit it (THT assembly fee) or delete its line and hand-solder it.
 
 **Before confirming, still look at JLC's placement preview for these** —

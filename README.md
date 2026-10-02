@@ -50,8 +50,8 @@ crystal oscillation margin, T1S signal quality and EMC, stack height.
 
 ## Where it is used
 
-An in-vehicle-network test bench: ESP32-S3 nodes running Zenoh-pico behind two
-Kontron D10 TSN switches with FRER (IEEE 802.1CB). The nodes use the Elite's
+A networking test bench: ESP32-S3 nodes running Zenoh-pico behind two
+TSN switches with FRER (IEEE 802.1CB). The nodes use the Elite's
 own W5500 today; this HAT gives them a 10BASE-T1S edge link, and its firmware's
 bridge mode joins a T1S segment to the switched 100BASE-TX backbone.
 

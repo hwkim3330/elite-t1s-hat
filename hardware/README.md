@@ -41,7 +41,7 @@ crossings, JP1, the 3V3 rail) are in git history before commit "Rev B".
   block, wired so the node taps a daisy chain.
 - **4 layers:** signals on top, In1.Cu solid GND, In2.Cu +3V3, bottom only the
   three SPI escapes. The T1S pair is 50 Ω by construction.
-- 38 parts, 4 of them deliberately unstuffed (R1/R2 termination, MOV1/MOV2 ESD).
+- 34 parts, 4 of them deliberately unstuffed (R1/R2 termination, MOV1/MOV2 ESD).
 
 ## The two parts that had to be chosen, not assumed
 
@@ -174,7 +174,7 @@ Design rules: 0.2 mm clearance (netclass), 0.15 mm minimum track, 0.45 mm vias
 with 0.25 mm drill, 0.20 mm minimum drill (the QFN's thermal vias), and one
 custom rule in `t1s_hat.kicad_dru`: **BUS_P/BUS_N keep 0.45 mm from every other
 net** (pads, tracks, vias and the F.Cu flood). The one exception is inside each
-MOV, whose own data-sheet land puts its BUS and GND pads 0.40 mm apart.
+MOV, whose own data-sheet land puts its BUS and GND pads 0.40 mm apart (the rule file relaxes clearance to 0.15 mm between pads inside each MOV courtyard, which covers that 0.40 mm gap).
 
 ## Termination stuffing — the one thing an assembler must decide
 
@@ -380,7 +380,7 @@ file and Microchip's documents before anything changed.
 
 ## Rev C (current) — what changed from Rev B, and why
 
-Rev B is kept as ordered at the git tag **`rev-b`**. Rev C changes only what the
+Rev B is kept, as designed (never ordered), at the git tag **`rev-b`**. Rev C changes only what the
 bench and the data sheet showed was wrong, and it gets cheaper doing it.
 
 | change | why |
@@ -449,7 +449,7 @@ on one PCB, no stacking), running Zenoh on the node itself.
 
 ## What is NOT verified — read before ordering
 
-- **Nothing has been bench-tested.** No board, no Elite, no riser in hand.
+- **This PCB has not been built.** The firmware and the measurements ran on T-ETH-Elite boards with a third-party LAN8651 HAT on a 2×20 riser (see `firmware/README.md`), not on this board.
 - **The two project-local lands come from data sheets, and have now been
   cross-checked against a second, independent source.** L1 was drawn from TDK's
   ACT1210 layout recommendation, MOV from TDK's AVR catalogue. On 2026-10-01 both
@@ -461,7 +461,7 @@ on one PCB, no stacking), running Zenoh on the node itself.
   0.87 mm pitch); ours is TDK's own (0.40 × 0.50 mm, 0.80 mm pitch). The MOVs are
   hand-fitted, so ours is the one that counts.
 - **Stock was read on 2026-10-01 from JLC's own assembly warehouse, not ordered
-  against.** All 16 BOM lines are in stock. The scarce one is **U1, LAN8651B1-E/LMX
+  against.** All 15 lines of the `end/` BOM are in stock. The scarce one is **U1, LAN8651B1-E/LMX
   (C22386973): 199 at JLC.** Check it first. LCSC retail shows R4–R6 (10k 0603,
   C25804) at 0, but that is LCSC's shop. JLC assembles from its own stock, which
   has 23 million.
