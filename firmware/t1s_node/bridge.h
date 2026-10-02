@@ -172,6 +172,25 @@ inline esp_eth_handle_t w5500Install() {
 // stands in for the PC (`mode tx`). No LAN8651 involved.
 static esp_eth_handle_t gNodeTx = nullptr;   // the W5500 in `mode tx`
 
+// Frames a driver handed up, counted on the way to lwIP: the plain answer to "does anything
+// arrive at all", with no chip register map to trust. Index 0 = W5500, 1 = LAN8651.
+struct RxCount { volatile uint32_t frames, bcast; volatile uint16_t lastType; };
+static RxCount gRx[2] = {};
+static esp_err_t countingInput(esp_eth_handle_t h, uint8_t *buf, uint32_t len, void *netif) {
+  RxCount &c = gRx[h == gNodeTx ? 0 : 1];
+  c.frames = c.frames + 1;
+  if (len >= 14) {
+    if (buf[0] == 0xFF) c.bcast = c.bcast + 1;
+    c.lastType = (buf[12] << 8) | buf[13];
+  }
+  return esp_netif_receive((esp_netif_t *)netif, buf, len, nullptr);
+}
+inline void countInput(esp_eth_handle_t h, esp_netif_t *nif) { esp_eth_update_input_path(h, countingInput, nif); }
+inline void printRx(int i, const char *name) {
+  Con.printf("rx %s: %lu frames (%lu broadcast), last ethertype 0x%04x\n", name, (unsigned long)gRx[i].frames,
+             (unsigned long)gRx[i].bcast, gRx[i].lastType);
+}
+
 // W5500 PHYCFGR as the chip reports it -- the link LED's truth, independent of driver events.
 // bit0 LNK, bit1 SPD (1 = 100), bit2 DPX (1 = full). The IDF driver maps every PHY register
 // register address is the W5500 map form, offset << 16 (common block = 0).
@@ -182,6 +201,20 @@ inline void printPhy() {
   const esp_err_t e = esp_eth_ioctl(gNodeTx, ETH_CMD_READ_PHY_REG, &rw);
   Con.printf("w5500: PHYCFGR 0x%02lx (%s) -> cable %s, %s, %s duplex\n", (unsigned long)(v & 0xFF),
              esp_err_to_name(e), (v & 1) ? "LINKED" : "NO LINK", (v & 2) ? "100M" : "10M", (v & 4) ? "full" : "half");
+}
+
+// Toggle the W5500 PHY's reset bit (PHYCFGR bit 7, active low) with "negotiate everything"
+// loaded, as the W5500 LiDAR firmware does: the mode bits only take effect across a reset.
+inline void phyReset() {
+  if (!gNodeTx) return;
+  uint32_t v = 0x78;  // OPMD 1, OPMDC 111, RST asserted
+  esp_eth_phy_reg_rw_data_t rw = {.reg_addr = 0x002E << 16, .reg_value_p = &v};
+  esp_eth_ioctl(gNodeTx, ETH_CMD_WRITE_PHY_REG, &rw);
+  delay(10);
+  v = 0xF8;
+  esp_eth_ioctl(gNodeTx, ETH_CMD_WRITE_PHY_REG, &rw);
+  delay(50);
+  printPhy();
 }
 
 inline esp_netif_t *startNode(uint32_t ip, uint32_t mask) {
@@ -196,6 +229,7 @@ inline esp_netif_t *startNode(uint32_t ip, uint32_t mask) {
   info.netmask.addr = mask;
   esp_netif_set_ip_info(nif, &info);
   esp_netif_attach(nif, esp_eth_new_netif_glue(tx));
+  countInput(tx, nif);
   const esp_err_t err = esp_eth_start(tx);
   Con.printf("w5500: start: %s, ip " IPSTR "\n", esp_err_to_name(err), IP2STR(&info.ip));
   return err == ESP_OK ? nif : nullptr;

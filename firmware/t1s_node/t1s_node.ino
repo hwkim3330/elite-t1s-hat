@@ -73,6 +73,7 @@ static volatile uint32_t gEchoCount = 0;
 static volatile uint32_t gSinkPackets = 0;
 static volatile uint64_t gSinkBytes = 0;
 static volatile uint32_t gSinkT0 = 0, gSinkLast = 0;
+static uint32_t gIdentifyUntil = 0;  // `identify`: LED strobes until then
 static uint32_t gRebootAtMs = 0;   // a remote `reboot`: delayed so its ack can leave first
 
 // 192.168.50.(10 + id), or .9 with PLCA off. A separate /24 from the W5500 bench
@@ -305,6 +306,7 @@ static bool t1sStart(bool withNetif) {
   ip.netmask.addr = gCfg.mask ? gCfg.mask : (uint32_t)IPAddress(255, 255, 255, 0);
   esp_netif_set_ip_info(gNetif, &ip);
   esp_netif_attach(gNetif, esp_eth_new_netif_glue(gEth));
+  bridge::countInput(gEth, gNetif);
   esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, onEthEvent, nullptr);
 
   err = esp_eth_start(gEth);
@@ -491,6 +493,7 @@ static void cmdReg(bool write, const char *args) {
   unsigned mms = 0, addr = 0, val = 0;
   int n = sscanf(args, "%u %x %x", &mms, &addr, &val);
   if (n < 2 || (write && n < 3)) { Con.println("reg r <mms> <hexaddr> | reg w <mms> <hexaddr> <hexval>"); return; }
+  if (!gMac) { Con.println("reg: no LAN8651 on this board (mode tx, or bring-up failed)"); return; }
   uint32_t v = val;
   esp_err_t err = write ? esp_eth_mac_lan865x_write_reg(gMac, mms, addr, v)
                         : esp_eth_mac_lan865x_read_reg(gMac, mms, addr, &v);
@@ -509,7 +512,8 @@ static void cmdStatus() {
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
   if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) bridge::printStats();
   else cmdSink(false);
-  if (gCfg.mode == kModeTx) bridge::printPhy();
+  if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); }
+  else if (gCfg.mode == kModeNode) bridge::printRx(1, "t1s");
   netConsolePrintStatus();
   if (gEth) printPlca();
   // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads --
@@ -537,6 +541,9 @@ static void help() {
       "blast <ip> [sec] [bytes] [port]  UDP (default port 9), seq-numbered, reports offered rate\n"
       "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
       "counters [reset]           MAC frame/collision/error counters, TC6 status, PLCA beacons\n"
+      "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
+      "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
+      "promisc on|off             accept every frame on the wire (W5500 in tx mode, LAN8651 otherwise)\n"
       "zenoh                      zenoh-pico session over T1S (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "wifi [<ssid> <pass> | ap]  join a WiFi network, or open own AP t1s-<id> (on reboot)\n"
@@ -558,6 +565,20 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "zenoh")) zenohT1sPrintStatus();
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
+  else if (!strcmp(cmd, "phyreset")) bridge::phyReset();
+  else if (!strcmp(cmd, "promisc") && n >= 1) {
+    // take every frame the wire carries, not only ours + broadcast: tells "nothing arrives"
+    // from "the MAC filter dropped it"
+    bool on = !strcmp(a, "on");
+    esp_eth_handle_t h = gCfg.mode == kModeTx ? bridge::gNodeTx : gEth;
+    Con.printf("promisc %s: %s\n", on ? "on" : "off",
+               h ? esp_err_to_name(esp_eth_ioctl(h, ETH_CMD_S_PROMISCUOUS, &on)) : "no interface");
+  }
+  else if (!strcmp(cmd, "identify")) {
+    const int secs = n >= 1 ? constrain(atoi(a), 1, 120) : 15;
+    gIdentifyUntil = millis() + secs * 1000;
+    Con.printf("identify: LED strobing for %d s\n", secs);
+  }
   else if (!strcmp(cmd, "plca") && n >= 1) {
     gCfg.plcaId = atoi(a);
     if (n >= 2) gCfg.plcaCount = atoi(b);
@@ -700,7 +721,8 @@ void loop() {
     if (esp_eth_mac_lan865x_read_reg(gMac, 4, 0xCA03, &v) == ESP_OK) pst = v & 0x8000;
   }
   bool on;
-  if (!gLinkUp) on = (millis() / 500) & 1;
+  if (gIdentifyUntil && (int32_t)(millis() - gIdentifyUntil) < 0) on = (millis() / 60) & 1;  // ~8 Hz strobe
+  else if (!gLinkUp) on = (millis() / 500) & 1;
   else if (plcaOn) on = pst || ((millis() / 125) & 1);
   else on = true;
   digitalWrite(kPinBoardLed, on ? HIGH : LOW);
