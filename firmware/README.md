@@ -15,11 +15,44 @@ Run from this `firmware/` folder. Arduino core `esp32:esp32` 3.3.0 (ESP-IDF 5.5)
 the W5500 bench firmware this was developed next to:
 
 ```bash
-FQBN="esp32:esp32:esp32s3:PSRAM=opi,USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=16M"
+FQBN="esp32:esp32:esp32s3:PSRAM=opi,USBMode=hwcdc,CDCOnBoot=cdc,FlashSize=16M,PartitionScheme=app3M_fat9M_16MB"
 arduino-cli compile --fqbn "$FQBN" t1s_node
 arduino-cli upload  --fqbn "$FQBN" -p /dev/ttyACM0 t1s_node
 arduino-cli monitor -p /dev/ttyACM0 -c baudrate=115200
 ```
+
+**Partition scheme:** `app3M_fat9M_16MB` gives two 3 MB app slots, so OTA has room. The
+build with zenoh is 1.16 MB, which would be 88 % of the default 1.25 MB slot. The first flash
+with this scheme has to go over USB, because it rewrites the partition table. After that,
+every update can go over WiFi.
+
+### Over WiFi: console and OTA
+
+Every board brings up WiFi last in `setup()` and offers two services:
+
+| | |
+|---|---|
+| console | TCP port 23 (`nc <ip> 23`). It is the same console as USB serial, and everything printed goes to both |
+| OTA | ArduinoOTA, hostname `t1s-<last 4 hex of MAC>`, announced over mDNS. The password defaults to `t1s-ota`; change it with `ota <pass>` + reboot |
+
+```
+wifi <ssid> <pass>    join that network as a station (saved; on reboot)
+wifi ap               no network: open its own AP "t1s-<id>" (pass t1s-bench), 192.168.4.1
+wifi                  show WiFi / OTA / console state
+```
+
+Update over WiFi:
+
+```bash
+arduino-cli upload --fqbn "$FQBN" --protocol network --port <board-ip> \
+  --upload-field password=t1s-ota t1s_node
+# or: python3 ~/.arduino15/packages/esp32/hardware/esp32/*/tools/espota.py \
+#       -i <board-ip> -a t1s-ota -f <build>/t1s_node.ino.bin
+```
+
+The WiFi console uses a different subnet from the T1S / W5500 side, so test traffic never
+goes over WiFi by accident. The bench console (`esp32-t1s-bridge`, :8813) finds the boards by
+mDNS, or takes them by IP.
 
 Built here: 580 KB flash (44 %). No warnings from the sketch, the bridge or
 the LAN865x driver. The copied `w5500_spi.h` shows its original volatile-`++`
@@ -52,6 +85,7 @@ T1S ↔ 100BASE-TX bridge.
 |---|---|---|---|
 | **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast` | yes, 192.168.50.x | compiles |
 | **bridge** | a **learning Ethernet bridge** between the Elite's W5500 (100BASE-TX) and the LAN8651 (10BASE-T1S), `bridge.h` | none, managed over USB serial | compiles |
+| **tx** | **no LAN8651:** the Elite's W5500 as an ordinary IP endpoint (echo, sink, `blast`, `ping`), default 192.168.100.66. This is the second board of a two-ESP bench, in the PC's place on the converter's 100BASE-TX port | yes, W5500 | compiles, not run |
 | **sniff** | a **receive-only bus analyser**: every T1S frame is copied out of the W5500 to a capture PC (Wireshark). PLCA is held off, there is no IP, and nothing is sent on T1S, so the bus under test is not disturbed | none | compiles, not run |
 
 Sniff is the converter's "ID ≥ 1, count 0" mode on this board. Wire the W5500 port
@@ -171,8 +205,9 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
 - **SPI clock:** 25 MHz is now the default, with the automatic step-down above. A LAN8651
   HAT on this firmware ran clean at 25 MHz: 9.0 Mbit/s to the node and 9.5 from it,
   against 6.0 / 6.3 at 12 MHz. The step-down itself has not run on hardware.
-- **Written without hardware (2026-10-01), builds with and without zenoh, never run:**
-  the SPI step-down, `counters`, sniff mode, and Zenoh remote config.
+- **Written without hardware (2026-10-01/02), builds with and without zenoh, never run:**
+  the SPI step-down, `counters`, sniff mode, Zenoh remote config, `mode tx`, the WiFi
+  console and OTA.
 
 ## Zenoh-pico over T1S (optional)
 

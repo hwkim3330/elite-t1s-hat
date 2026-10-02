@@ -18,6 +18,7 @@
 #include "zenoh_t1s.h"
 
 #include <Arduino.h>
+#include "net_console.h"
 
 #ifdef T1S_WITH_ZENOH
 #include <cmath>
@@ -73,7 +74,7 @@ static void onPong(z_loaned_sample_t *sample, void *) {
 static void onCmd(z_loaned_sample_t *sample, void *) {
   z_owned_string_t v;
   z_bytes_to_string(z_sample_payload(sample), &v);
-  Serial.printf("zenoh: cmd \"%.*s\"\n", (int)z_string_len(z_string_loan(&v)), z_string_data(z_string_loan(&v)));
+  Con.printf("zenoh: cmd \"%.*s\"\n", (int)z_string_len(z_string_loan(&v)), z_string_data(z_string_loan(&v)));
   z_string_drop(z_string_move(&v));
 }
 
@@ -111,8 +112,8 @@ static bool start() {
   z_config_default(&cfg);
   zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_MODE_KEY, "peer");
   zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_CONNECT_KEY, ZENOH_LOCATOR);
-  Serial.printf("zenoh: opening %s as %s ...\n", ZENOH_LOCATOR, sNode);
-  if (z_open(&sSession, z_config_move(&cfg), NULL) < 0) { Serial.println("zenoh: open FAILED"); return false; }
+  Con.printf("zenoh: opening %s as %s ...\n", ZENOH_LOCATOR, sNode);
+  if (z_open(&sSession, z_config_move(&cfg), NULL) < 0) { Con.println("zenoh: open FAILED"); return false; }
   char ke[64];
   bool ok = true;
   snprintf(ke, sizeof(ke), "t1s/%s/hello", sNode);   ok &= declarePub(sHello, ke);
@@ -123,7 +124,7 @@ static bool start() {
   snprintf(ke, sizeof(ke), "t1s/%s/cmd", sNode);     ok &= declareSub(sCmd, ke, onCmd);
   snprintf(ke, sizeof(ke), "t1s/%s/config", sNode);  ok &= declareSub(sCfg, ke, onConfig);
   snprintf(ke, sizeof(ke), "t1s/%s/config/ack", sNode); ok &= declarePub(sAck, ke);
-  Serial.printf("zenoh: session %s\n", ok ? "up" : "declare FAILED");
+  Con.printf("zenoh: session %s\n", ok ? "up" : "declare FAILED");
   return ok;
 }
 
@@ -178,12 +179,12 @@ void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
 }
 
 void zenohT1sPrintStatus() {
-  if (!sUp) { Serial.printf("zenoh: %s\n", sWanted ? "connecting" : "off"); return; }
+  if (!sUp) { Con.printf("zenoh: %s\n", sWanted ? "connecting" : "off"); return; }
   const Rtt &r = sRttLast;
-  Serial.printf("zenoh: up as %s via %s, sent %lu, pongs %lu, last pong %lu ms ago", sNode, ZENOH_LOCATOR,
+  Con.printf("zenoh: up as %s via %s, sent %lu, pongs %lu, last pong %lu ms ago", sNode, ZENOH_LOCATOR,
                 (unsigned long)sSent, (unsigned long)sPongs, (unsigned long)(millis() - sLastPongMs));
-  if (r.n) Serial.printf(", rtt avg %.2f min %.2f max %.2f ms (n=%u)", r.sum / 1000.0 / r.n, r.mn / 1000.0, r.mx / 1000.0, (unsigned)r.n);
-  Serial.println();
+  if (r.n) Con.printf(", rtt avg %.2f min %.2f max %.2f ms (n=%u)", r.sum / 1000.0 / r.n, r.mn / 1000.0, r.mx / 1000.0, (unsigned)r.n);
+  Con.println();
 }
 
 bool zenohT1sAvailable() { return true; }
@@ -228,7 +229,7 @@ void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_
 #else  // built without T1S_WITH_ZENOH
 
 void zenohT1sLoop(bool, int, int) {}
-void zenohT1sPrintStatus() { Serial.println("zenoh: not built in (compile with zenoh-pico)"); }
+void zenohT1sPrintStatus() { Con.println("zenoh: not built in (compile with zenoh-pico)"); }
 bool zenohT1sAvailable() { return false; }
 void zenohT1sStartTask(volatile bool *, const uint8_t *, const uint8_t *, uint8_t) {}
 bool zenohT1sTakeConfig(char *, size_t) { return false; }

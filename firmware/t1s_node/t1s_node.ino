@@ -23,6 +23,7 @@
 #include "src/lan865x/esp_eth_phy_lan865x.h"
 #include "bridge.h"
 #include "zenoh_t1s.h"
+#include "net_console.h"
 
 // w5500_spi.h (shared with the W5500 bench firmware) declares this extern; one definition per image.
 W5500Spi *gW5500Spi = nullptr;
@@ -43,8 +44,13 @@ constexpr uint8_t kPlcaOff = 255;
 // bridge: W5500 100BASE-TX <-> LAN8651 10BASE-T1S learning bridge, no IP (bridge.h)
 // sniff:  receive-only bus analyser -- every T1S frame copied out of the W5500, PLCA off, no
 //         IP, never transmits on T1S (the converter's "ID >= 1, count 0" mode, on this board)
-enum Mode : uint8_t { kModeNode = 0, kModeBridge = 1, kModeSniff = 2 };
-static const char *modeName(uint8_t m) { return m == kModeBridge ? "bridge" : m == kModeSniff ? "sniff" : "node"; }
+// tx:     no LAN8651 at all -- the Elite's W5500 as an ordinary IP endpoint (echo, sink,
+//         blast, ping). The second board of a two-ESP bench, standing in for the PC on the
+//         converter's 100BASE-TX port.
+enum Mode : uint8_t { kModeNode = 0, kModeBridge = 1, kModeSniff = 2, kModeTx = 3 };
+static const char *modeName(uint8_t m) {
+  return m == kModeBridge ? "bridge" : m == kModeSniff ? "sniff" : m == kModeTx ? "tx" : "node";
+}
 
 struct Config {
   uint8_t mode = kModeNode;
@@ -72,6 +78,8 @@ static uint32_t gRebootAtMs = 0;   // a remote `reboot`: delayed so its ack can 
 // 192.168.50.(10 + id), or .9 with PLCA off. A separate /24 from the W5500 bench
 // (192.168.1.x) so the two interfaces can be up together later without a routing question.
 static uint32_t defaultIp() {
+  // tx mode sits on the bench LAN next to the HAT (192.168.100.65 there), as the PC did
+  if (gCfg.mode == kModeTx) return (uint32_t)IPAddress(192, 168, 100, 66);
   const uint8_t last = gCfg.plcaId == kPlcaOff ? 9 : 10 + gCfg.plcaId;
   return (uint32_t)IPAddress(192, 168, 50, last);
 }
@@ -99,8 +107,8 @@ static void saveConfig() {
 }
 
 static void onEthEvent(void *, esp_event_base_t, int32_t id, void *) {
-  if (id == ETHERNET_EVENT_CONNECTED) { gLinkUp = true; Serial.println("t1s: link up"); }
-  if (id == ETHERNET_EVENT_DISCONNECTED) { gLinkUp = false; Serial.println("t1s: link down"); }
+  if (id == ETHERNET_EVENT_CONNECTED) { gLinkUp = true; Con.println("t1s: link up"); }
+  if (id == ETHERNET_EVENT_DISCONNECTED) { gLinkUp = false; Con.println("t1s: link down"); }
 }
 
 // ---------------------------------------------------------------- PLCA
@@ -126,8 +134,8 @@ static void printPlca() {
   esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_G_EN_PLCA, &en);
   esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_G_PLCA_ID, &id);
   esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_G_PLCA_NCNT, &cnt);
-  if (en) Serial.printf("plca: on, id %u of %u%s\n", id, cnt, id == 0 ? " (coordinator)" : "");
-  else Serial.println("plca: off (CSMA/CD)");
+  if (en) Con.printf("plca: on, id %u of %u%s\n", id, cnt, id == 0 ? " (coordinator)" : "");
+  else Con.println("plca: off (CSMA/CD)");
 }
 
 // ---------------------------------------------------------------- bring-up
@@ -197,15 +205,15 @@ static bool t1sStart(bool withNetif) {
   uint32_t probed = tc6RawReadDevid(mosi, miso);
   if (!isLan865x(probed)) {
     const uint32_t swapped = tc6RawReadDevid(miso, mosi);
-    Serial.printf("t1s: probe MOSI=IO%d MISO=IO%d -> 0x%08lx, swapped -> 0x%08lx\n", mosi, miso,
+    Con.printf("t1s: probe MOSI=IO%d MISO=IO%d -> 0x%08lx, swapped -> 0x%08lx\n", mosi, miso,
                   (unsigned long)probed, (unsigned long)swapped);
     if (isLan865x(swapped)) {
       mosi = kPinT1sMiso;
       miso = kPinT1sMosi;
-      Serial.println("t1s: MOSI/MISO are the other way round on this board -- using the swapped mapping");
+      Con.println("t1s: MOSI/MISO are the other way round on this board -- using the swapped mapping");
     }
   } else {
-    Serial.printf("t1s: probe OK, DEVID 0x%08lx (MOSI=IO%d MISO=IO%d)\n", (unsigned long)probed, mosi, miso);
+    Con.printf("t1s: probe OK, DEVID 0x%08lx (MOSI=IO%d MISO=IO%d)\n", (unsigned long)probed, mosi, miso);
   }
 
   spi_bus_config_t bus = {};
@@ -217,7 +225,7 @@ static bool t1sStart(bool withNetif) {
   // SPI3, not SPI2: SPI2 is what the W5500 firmware already uses, so the
   // two can later run in one image as a T1S <-> 100BASE-TX bridge.
   esp_err_t err = spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
-  Serial.printf("t1s: spi bus: %s\n", esp_err_to_name(err));
+  Con.printf("t1s: spi bus: %s\n", esp_err_to_name(err));
   if (err != ESP_OK) return false;
   // Softer edges instead of series damping resistors: ~20 mm of riser stack between the ESP32
   // and the HAT, and the ESP32-S3's default drive (~20 mA) rings on it for no benefit at
@@ -247,13 +255,13 @@ static bool t1sStart(bool withNetif) {
     lanCfg.custom_spi_driver = ETH_DEFAULT_SPI;
     gMac = esp_eth_mac_new_lan865x(&lanCfg, &macCfg);
     esp_eth_phy_t *phy = esp_eth_phy_new_lan865x(&phyCfg);
-    if (!gMac || !phy) { Serial.println("t1s: driver alloc failed"); return false; }
+    if (!gMac || !phy) { Con.println("t1s: driver alloc failed"); return false; }
     esp_eth_config_t ethCfg = ETH_DEFAULT_CONFIG(gMac, phy);
     err = esp_eth_driver_install(&ethCfg, &gEth);
     // This is the line that says whether the board works at all: install runs the chip reset,
     // reads DEVID and refuses anything but 0x8650/0x8651. ESP_ERR_TIMEOUT or ESP_ERR_INVALID_CRC
     // means SPI did not reach the chip at this clock: check the riser and CS on IO0.
-    Serial.printf("t1s: driver install at %u MHz: %s\n", mhz, esp_err_to_name(err));
+    Con.printf("t1s: driver install at %u MHz: %s\n", mhz, esp_err_to_name(err));
     if (err == ESP_OK) { gSpiMhzRunning = mhz; break; }
     gMac->del(gMac);
     phy->del(phy);
@@ -264,7 +272,7 @@ static bool t1sStart(bool withNetif) {
   if (err != ESP_OK) return false;
   uint32_t devid = 0;
   if (esp_eth_mac_lan865x_read_reg(gMac, 10, 0x94, &devid) == ESP_OK)
-    Serial.printf("t1s: chip LAN%04lx rev %lu\n", (unsigned long)((devid >> 4) & 0xFFFF),
+    Con.printf("t1s: chip LAN%04lx rev %lu\n", (unsigned long)((devid >> 4) & 0xFFFF),
                   (unsigned long)(devid & 0xF));
 
   // The driver turns the ESP32's internal pull-DOWN on for the IRQ pin (it assumes nothing
@@ -278,15 +286,15 @@ static bool t1sStart(bool withNetif) {
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_ETH);
   esp_eth_ioctl(gEth, ETH_CMD_S_MAC_ADDR, mac);
-  Serial.printf("t1s: mac %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  Con.printf("t1s: mac %02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
   err = applyPlca();
-  Serial.printf("t1s: plca config: %s\n", esp_err_to_name(err));
+  Con.printf("t1s: plca config: %s\n", esp_err_to_name(err));
   printPlca();
 
   if (!withNetif) {  // bridge mode: bridge.h takes the input path over, nothing for lwIP
     err = esp_eth_start(gEth);
-    Serial.printf("t1s: start (no IP, bridge port): %s\n", esp_err_to_name(err));
+    Con.printf("t1s: start (no IP, bridge port): %s\n", esp_err_to_name(err));
     return err == ESP_OK;
   }
   esp_netif_config_t nifCfg = ESP_NETIF_DEFAULT_ETH();
@@ -300,7 +308,7 @@ static bool t1sStart(bool withNetif) {
   esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, onEthEvent, nullptr);
 
   err = esp_eth_start(gEth);
-  Serial.printf("t1s: start: %s, ip " IPSTR "\n", esp_err_to_name(err), IP2STR(&ip.ip));
+  Con.printf("t1s: start: %s, ip " IPSTR "\n", esp_err_to_name(err), IP2STR(&ip.ip));
   return err == ESP_OK;
 }
 
@@ -350,9 +358,9 @@ static void cmdSink(bool reset) {
   const float secs = pk > 1 ? (gSinkLast - gSinkT0) / 1000.0f : 0.0f;
   // same accounting as blast: payload + 42 B of Ethernet/IP/UDP headers per datagram
   const float mbit = secs > 0 ? (by + 42.0f * pk) * 8 / secs / 1e6f : 0.0f;
-  Serial.printf("sink: %lu packets, %llu B in %.1f s = %.2f Mbit/s on the wire\n",
+  Con.printf("sink: %lu packets, %llu B in %.1f s = %.2f Mbit/s on the wire\n",
                 (unsigned long)pk, (unsigned long long)by, secs, mbit);
-  if (reset) { gSinkPackets = 0; gSinkBytes = 0; Serial.println("sink: counters reset"); }
+  if (reset) { gSinkPackets = 0; gSinkBytes = 0; Con.println("sink: counters reset"); }
 }
 
 // ---------------------------------------------------------------- bus counters
@@ -382,10 +390,10 @@ static void pollCounters() {
 }
 
 static void cmdCounters(bool reset) {
-  if (!gMac) { Serial.println("counters: no LAN8651"); return; }
+  if (!gMac) { Con.println("counters: no LAN8651"); return; }
   pollCounters();
   for (int i = 0; i < kGemN; i++)
-    Serial.printf("%-20s %llu\n", kGem[i].name, (unsigned long long)gGemSum[i]);
+    Con.printf("%-20s %llu\n", kGem[i].name, (unsigned long long)gGemSum[i]);
   // TC6 STATUS0/1 (MMS 0): sticky error flags; BUFSTS: TX credits / RX chunks right now;
   // PLCA_STS (MMS 4 0xCA03) bit 15 = PST, beacons are being seen.
   uint32_t st0 = 0, st1 = 0, buf = 0, pst = 0;
@@ -393,11 +401,11 @@ static void cmdCounters(bool reset) {
   esp_eth_mac_lan865x_read_reg(gMac, 0, 0x09, &st1);
   esp_eth_mac_lan865x_read_reg(gMac, 0, 0x0B, &buf);
   esp_eth_mac_lan865x_read_reg(gMac, 4, 0xCA03, &pst);
-  Serial.printf("tc6 status0 0x%08lx status1 0x%08lx  tx credits %lu rx chunks %lu  plca_sts 0x%04lx (%s)\n",
+  Con.printf("tc6 status0 0x%08lx status1 0x%08lx  tx credits %lu rx chunks %lu  plca_sts 0x%04lx (%s)\n",
                 (unsigned long)st0, (unsigned long)st1, (unsigned long)((buf >> 8) & 0xFF),
                 (unsigned long)(buf & 0xFF), (unsigned long)(pst & 0xFFFF),
                 !plcaWanted() ? "plca off" : (pst & 0x8000) ? "beacons seen" : "NO beacons");
-  if (reset) { memset(gGemSum, 0, sizeof(gGemSum)); Serial.println("counters: reset"); }
+  if (reset) { memset(gGemSum, 0, sizeof(gGemSum)); Con.println("counters: reset"); }
 }
 
 // One line for Zenoh: what the node is running now, read back from the chip.
@@ -422,7 +430,7 @@ static void stateLine(char *out, size_t n, const char *head) {
 
 static void cmdPing(const char *host, int count) {
   ip_addr_t target = {};
-  if (!ipaddr_aton(host, &target)) { Serial.println("ping: bad address"); return; }
+  if (!ipaddr_aton(host, &target)) { Con.println("ping: bad address"); return; }
   esp_ping_config_t cfg = ESP_PING_DEFAULT_CONFIG();
   cfg.target_addr = target;
   cfg.count = count;
@@ -432,18 +440,18 @@ static void cmdPing(const char *host, int count) {
     uint32_t t, seq;
     esp_ping_get_profile(h, ESP_PING_PROF_TIMEGAP, &t, sizeof(t));
     esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
-    Serial.printf("ping: seq %lu %lu ms\n", (unsigned long)seq, (unsigned long)t);
+    Con.printf("ping: seq %lu %lu ms\n", (unsigned long)seq, (unsigned long)t);
   };
   cb.on_ping_timeout = [](esp_ping_handle_t h, void *) {
     uint32_t seq;
     esp_ping_get_profile(h, ESP_PING_PROF_SEQNO, &seq, sizeof(seq));
-    Serial.printf("ping: seq %lu timeout\n", (unsigned long)seq);
+    Con.printf("ping: seq %lu timeout\n", (unsigned long)seq);
   };
   cb.on_ping_end = [](esp_ping_handle_t h, void *) {
     uint32_t tx, rx;
     esp_ping_get_profile(h, ESP_PING_PROF_REQUEST, &tx, sizeof(tx));
     esp_ping_get_profile(h, ESP_PING_PROF_REPLY, &rx, sizeof(rx));
-    Serial.printf("ping: %lu sent, %lu replied\n", (unsigned long)tx, (unsigned long)rx);
+    Con.printf("ping: %lu sent, %lu replied\n", (unsigned long)tx, (unsigned long)rx);
     esp_ping_delete_session(h);
   };
   esp_ping_handle_t h;
@@ -459,7 +467,7 @@ static void cmdBlast(const char *host, int seconds, int size, int port = 9) {
   sockaddr_in to = {};
   to.sin_family = AF_INET;
   to.sin_port = htons(port);
-  if (!inet_aton(host, &to.sin_addr)) { Serial.println("blast: bad address"); close(s); return; }
+  if (!inet_aton(host, &to.sin_addr)) { Con.println("blast: bad address"); close(s); return; }
   size = constrain(size, 18, 1472);
   static uint8_t buf[1472];
   memset(buf, 0xA5, sizeof(buf));
@@ -474,7 +482,7 @@ static void cmdBlast(const char *host, int seconds, int size, int port = 9) {
   const float secs = (millis() - t0) / 1000.0f;
   // 42 = Ethernet + IP + UDP headers, what the bus actually carries per datagram (plus
   // preamble and FCS, which are not counted here).
-  Serial.printf("blast: %lu x %d B in %.1f s = %.2f Mbit/s on the wire, %lu refused\n",
+  Con.printf("blast: %lu x %d B in %.1f s = %.2f Mbit/s on the wire, %lu refused\n",
                 (unsigned long)sent, size, secs, sent * (size + 42) * 8 / secs / 1e6f,
                 (unsigned long)failed);
 }
@@ -482,24 +490,26 @@ static void cmdBlast(const char *host, int seconds, int size, int port = 9) {
 static void cmdReg(bool write, const char *args) {
   unsigned mms = 0, addr = 0, val = 0;
   int n = sscanf(args, "%u %x %x", &mms, &addr, &val);
-  if (n < 2 || (write && n < 3)) { Serial.println("reg r <mms> <hexaddr> | reg w <mms> <hexaddr> <hexval>"); return; }
+  if (n < 2 || (write && n < 3)) { Con.println("reg r <mms> <hexaddr> | reg w <mms> <hexaddr> <hexval>"); return; }
   uint32_t v = val;
   esp_err_t err = write ? esp_eth_mac_lan865x_write_reg(gMac, mms, addr, v)
                         : esp_eth_mac_lan865x_read_reg(gMac, mms, addr, &v);
-  Serial.printf("reg %s mms %u 0x%04x = 0x%08lx (%s)\n", write ? "w" : "r", mms, addr,
+  Con.printf("reg %s mms %u 0x%04x = 0x%08lx (%s)\n", write ? "w" : "r", mms, addr,
                 (unsigned long)v, esp_err_to_name(err));
 }
 
 static void cmdStatus() {
   esp_netif_ip_info_t ip = {};
   if (gNetif) esp_netif_get_ip_info(gNetif, &ip);
-  Serial.printf("mode: %s\n", gCfg.mode == kModeBridge ? "bridge (W5500 <-> T1S, no IP)"
+  Con.printf("mode: %s\n", gCfg.mode == kModeBridge ? "bridge (W5500 <-> T1S, no IP)"
                               : gCfg.mode == kModeSniff ? "sniff (T1S -> W5500 only, PLCA off, never transmits)"
+                              : gCfg.mode == kModeTx    ? "tx (W5500 endpoint, no LAN8651)"
                                                         : "node");
-  Serial.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz  echo %lu\n", gLinkUp ? "up" : "down",
+  Con.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz  echo %lu\n", gLinkUp ? "up" : "down",
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
-  if (gCfg.mode != kModeNode) bridge::printStats();
+  if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) bridge::printStats();
   else cmdSink(false);
+  netConsolePrintStatus();
   if (gEth) printPlca();
   // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads --
   // the two LEDs on this board -- are currently muxed. PADCTRL is printed, not written: which
@@ -507,17 +517,17 @@ static void cmdStatus() {
   if (gMac) {
     uint32_t v;
     if (esp_eth_mac_lan865x_read_reg(gMac, 10, 0x94, &v) == ESP_OK)
-      Serial.printf("devid: LAN%04lx rev %lu\n", (unsigned long)((v >> 4) & 0xFFFF), (unsigned long)(v & 0xF));
+      Con.printf("devid: LAN%04lx rev %lu\n", (unsigned long)((v >> 4) & 0xFFFF), (unsigned long)(v & 0xF));
     if (esp_eth_mac_lan865x_read_reg(gMac, 10, 0x88, &v) == ESP_OK)
-      Serial.printf("padctrl: 0x%08lx (DIOA0 sel %lu, DIOA1 sel %lu)\n", (unsigned long)v,
+      Con.printf("padctrl: 0x%08lx (DIOA0 sel %lu, DIOA1 sel %lu)\n", (unsigned long)v,
                     (unsigned long)(v & 3), (unsigned long)((v >> 2) & 3));
   }
 }
 
 static void help() {
-  Serial.println(
+  Con.println(
       "status                     mode, link, ip, PLCA as read back, chip id, bridge counters\n"
-      "mode node|bridge|sniff     T1S endpoint, W5500<->T1S bridge, or receive-only sniffer (save + reboot)\n"
+      "mode node|bridge|sniff|tx  T1S endpoint, W5500<->T1S bridge, T1S sniffer, or W5500-only endpoint (save + reboot)\n"
       "plca <id> [count]          PLCA node id (0 = coordinator) and node count\n"
       "csma                       PLCA off, plain CSMA/CD\n"
       "ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)\n"
@@ -528,6 +538,8 @@ static void help() {
       "counters [reset]           MAC frame/collision/error counters, TC6 status, PLCA beacons\n"
       "zenoh                      zenoh-pico session over T1S (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
+      "wifi [<ssid> <pass> | ap]  join a WiFi network, or open own AP t1s-<id> (on reboot)\n"
+      "ota <pass>                 OTA password (default t1s-ota, on reboot)\n"
       "save / reboot              write config to flash / restart\n"
       "(UDP echo on port 7 and the discard sink on port 9 always run in node mode)");
 }
@@ -540,6 +552,7 @@ static void handleLine(char *line) {
   char a[32] = {}, b[32] = {};
   int n = sscanf(rest, "%31s %31s", a, b);
 
+  if (netConsoleCommand(cmd, a, b, n)) return;
   if (!strcmp(cmd, "status")) cmdStatus();
   else if (!strcmp(cmd, "zenoh")) zenohT1sPrintStatus();
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
@@ -547,16 +560,16 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "plca") && n >= 1) {
     gCfg.plcaId = atoi(a);
     if (n >= 2) gCfg.plcaCount = atoi(b);
-    Serial.printf("plca: %s\n", esp_err_to_name(applyPlca()));
+    Con.printf("plca: %s\n", esp_err_to_name(applyPlca()));
     printPlca();
-    Serial.println("(`save` to keep it; the default ip follows the id only after reboot)");
+    Con.println("(`save` to keep it; the default ip follows the id only after reboot)");
   } else if (!strcmp(cmd, "csma")) {
     gCfg.plcaId = kPlcaOff;
-    Serial.printf("plca: %s\n", esp_err_to_name(applyPlca()));
+    Con.printf("plca: %s\n", esp_err_to_name(applyPlca()));
     printPlca();
   } else if (!strcmp(cmd, "ip") && n >= 1) {
     IPAddress ip, mask(255, 255, 255, 0);
-    if (!ip.fromString(a) || (n >= 2 && !mask.fromString(b))) { Serial.println("ip: bad address"); return; }
+    if (!ip.fromString(a) || (n >= 2 && !mask.fromString(b))) { Con.println("ip: bad address"); return; }
     gCfg.ip = (uint32_t)ip;
     gCfg.mask = (uint32_t)mask;
     esp_netif_ip_info_t info = {};
@@ -566,7 +579,7 @@ static void handleLine(char *line) {
     cmdStatus();
   } else if (!strcmp(cmd, "spi") && n >= 1) {
     gCfg.spiMhz = constrain(atoi(a), 1, 25);
-    Serial.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
+    Con.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
   } else if (!strcmp(cmd, "ping") && n >= 1) cmdPing(a, n >= 2 ? atoi(b) : 5);
   else if (!strcmp(cmd, "blast") && n >= 1) {
     int sec = 5, size = 1472, port = 9;
@@ -577,10 +590,11 @@ static void handleLine(char *line) {
     if (!strcmp(a, "bridge")) gCfg.mode = kModeBridge;
     else if (!strcmp(a, "node")) gCfg.mode = kModeNode;
     else if (!strcmp(a, "sniff")) gCfg.mode = kModeSniff;
-    else { Serial.println("mode node|bridge|sniff"); return; }
-    Serial.printf("mode: %s after save + reboot\n", a);
+    else if (!strcmp(a, "tx")) gCfg.mode = kModeTx;
+    else { Con.println("mode node|bridge|sniff|tx"); return; }
+    Con.printf("mode: %s after save + reboot\n", a);
   }
-  else if (!strcmp(cmd, "save")) { saveConfig(); Serial.println("saved"); }
+  else if (!strcmp(cmd, "save")) { saveConfig(); Con.println("saved"); }
   else if (!strcmp(cmd, "reboot")) ESP.restart();
   else help();
 }
@@ -596,7 +610,7 @@ static void runRemoteConfig(const char *text) {
   sscanf(line, "%15s", first);
   bool ok = false;
   for (const char *c : kAllowed) ok |= !strcmp(first, c);
-  Serial.printf("zenoh: config \"%s\"%s\n", line, ok ? "" : " -- refused");
+  Con.printf("zenoh: config \"%s\"%s\n", line, ok ? "" : " -- refused");
   char ack[200];
   if (!ok) {
     snprintf(ack, sizeof(ack), "refused \"%s\" (allowed: plca csma ip spi mode save reboot status counters)", first);
@@ -617,29 +631,50 @@ static void runRemoteConfig(const char *text) {
 void setup() {
   Serial.begin(115200);
   delay(1500);  // let USB CDC enumerate so the bring-up log is not lost
-  Serial.println("\n== T1S HAT node (LAN8651 on T-ETH-Elite) ==");
+  Con.println("\n== T1S HAT node (LAN8651 on T-ETH-Elite) ==");
   pinMode(kPinBoardLed, OUTPUT);
   loadConfig();
   const bool noIp = gCfg.mode != kModeNode;
-  if (!t1sStart(!noIp)) {
-    Serial.println("t1s: bring-up FAILED -- console still runs; `spi 4`, `save`, `reboot` to retry slower");
+  if (gCfg.mode == kModeTx) {
+    esp_netif_init();
+    esp_event_loop_create_default();
+    esp_event_handler_register(ETH_EVENT, ESP_EVENT_ANY_ID, onEthEvent, nullptr);
+    gNetif = bridge::startNode(gCfg.ip ? gCfg.ip : defaultIp(),
+                               gCfg.mask ? gCfg.mask : (uint32_t)IPAddress(255, 255, 255, 0));
+    if (!gNetif) Con.println("w5500: bring-up FAILED");
+    else {
+      xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
+      xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
+    }
+  } else if (!t1sStart(!noIp)) {
+    Con.println("t1s: bring-up FAILED -- console still runs; `spi 4`, `save`, `reboot` to retry slower");
   } else if (noIp) {
     if (!bridge::start(gEth, gCfg.mode == kModeSniff))
-      Serial.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
+      Con.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
   } else {
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
     zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
+  // WiFi console + OTA last (tasks created after WiFi starts can fail for lack of internal RAM).
+  // Named by the efuse MAC's last two bytes, so two boards never share a hostname.
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_WIFI_STA);
+  char tag[8];
+  snprintf(tag, sizeof(tag), "%02x%02x", mac[4], mac[5]);
+  netConsoleBegin(tag);
   help();
 }
 
 void loop() {
   static char line[128];
   static size_t len = 0;
-  while (Serial.available()) {
-    char c = Serial.read();
+  // USB serial and the WiFi console feed the same line editor
+  for (;;) {
+    int ci = Serial.available() ? Serial.read() : netConsoleRead();
+    if (ci < 0) break;
+    const char c = (char)ci;
     if (c == '\r') continue;
     if (c == '\n') { line[len] = 0; handleLine(line); len = 0; }
     else if (len < sizeof(line) - 1) line[len++] = c;

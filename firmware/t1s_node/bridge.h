@@ -28,7 +28,9 @@
 #include <esp_eth_mac_spi.h>
 #include <esp_mac.h>
 #include <driver/spi_master.h>
+#include <esp_netif.h>
 #include "w5500_spi.h"
+#include "net_console.h"
 
 // The Elite's W5500, as measured on the W5500 bench (LilyGo's schematic agrees on these four).
 // Polled, not interrupt-driven: that project found no working INT line on its boards, and a
@@ -118,10 +120,8 @@ static esp_err_t input(esp_eth_handle_t, uint8_t *buf, uint32_t len, void *priv)
   return ESP_OK;
 }
 
-// Bring the W5500 up with no netif, in promiscuous mode, and join it to an already-running
-// LAN865x handle. Returns false and prints why on any failure.
-inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
-  gSniff = sniff;
+// Install the W5500 driver on SPI2 (not started). Returns nullptr and prints why on failure.
+inline esp_eth_handle_t w5500Install() {
   spi_bus_config_t bus = {};
   bus.mosi_io_num = kPinEthMosi;
   bus.miso_io_num = kPinEthMiso;
@@ -130,8 +130,8 @@ inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
   bus.quadhd_io_num = -1;
   bus.max_transfer_sz = 20000;  // see w5500_spi.h: split reads at the RX buffer wrap
   esp_err_t err = spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO);
-  Serial.printf("bridge: w5500 spi bus: %s\n", esp_err_to_name(err));
-  if (err != ESP_OK) return false;
+  Con.printf("bridge: w5500 spi bus: %s\n", esp_err_to_name(err));
+  if (err != ESP_OK) return nullptr;
 
   static spi_device_interface_config_t dev = {};
   dev.mode = 0;
@@ -155,27 +155,55 @@ inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
   phyCfg.reset_gpio_num = -1;
   esp_eth_mac_t *mac = esp_eth_mac_new_w5500(&w, &macCfg);
   esp_eth_phy_t *phy = esp_eth_phy_new_w5500(&phyCfg);
-  if (!mac || !phy) { Serial.println("bridge: w5500 driver alloc failed"); return false; }
+  if (!mac || !phy) { Con.println("bridge: w5500 driver alloc failed"); return nullptr; }
   esp_eth_config_t cfg = ETH_DEFAULT_CONFIG(mac, phy);
   esp_eth_handle_t tx = nullptr;
   err = esp_eth_driver_install(&cfg, &tx);
-  Serial.printf("bridge: w5500 install: %s\n", esp_err_to_name(err));
-  if (err != ESP_OK) return false;
+  Con.printf("bridge: w5500 install: %s\n", esp_err_to_name(err));
+  if (err != ESP_OK) return nullptr;
   uint8_t m[6];
   esp_read_mac(m, ESP_MAC_ETH);
   m[5] ^= 0x01;  // distinct from the LAN8651's, which took the efuse Ethernet MAC
   esp_eth_ioctl(tx, ETH_CMD_S_MAC_ADDR, m);
+  return tx;
+}
+
+// W5500 as an ordinary lwIP interface: the 100BASE-TX end of a bench where a second board
+// stands in for the PC (`mode tx`). No LAN8651 involved.
+inline esp_netif_t *startNode(uint32_t ip, uint32_t mask) {
+  esp_eth_handle_t tx = w5500Install();
+  if (!tx) return nullptr;
+  esp_netif_config_t nifCfg = ESP_NETIF_DEFAULT_ETH();
+  esp_netif_t *nif = esp_netif_new(&nifCfg);
+  esp_netif_dhcpc_stop(nif);
+  esp_netif_ip_info_t info = {};
+  info.ip.addr = ip;
+  info.netmask.addr = mask;
+  esp_netif_set_ip_info(nif, &info);
+  esp_netif_attach(nif, esp_eth_new_netif_glue(tx));
+  const esp_err_t err = esp_eth_start(tx);
+  Con.printf("w5500: start: %s, ip " IPSTR "\n", esp_err_to_name(err), IP2STR(&info.ip));
+  return err == ESP_OK ? nif : nullptr;
+}
+
+// Bring the W5500 up with no netif, in promiscuous mode, and join it to an already-running
+// LAN865x handle. Returns false and prints why on any failure.
+inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
+  gSniff = sniff;
+  esp_eth_handle_t tx = w5500Install();
+  if (!tx) return false;
+  esp_err_t err;
 
   gPort[kTx] = tx;
   gPort[kT1s] = t1s;
   bool on = true;
   for (int s = 0; s < 2; s++) {
     err = esp_eth_ioctl(gPort[s], ETH_CMD_S_PROMISCUOUS, &on);
-    Serial.printf("bridge: %s promiscuous: %s\n", s == kTx ? "w5500" : "lan8651", esp_err_to_name(err));
+    Con.printf("bridge: %s promiscuous: %s\n", s == kTx ? "w5500" : "lan8651", esp_err_to_name(err));
     esp_eth_update_input_path(gPort[s], input, (void *)(uintptr_t)s);
   }
   err = esp_eth_start(tx);
-  Serial.printf("bridge: w5500 start: %s -- %s\n", esp_err_to_name(err),
+  Con.printf("bridge: w5500 start: %s -- %s\n", esp_err_to_name(err),
                 sniff ? "sniffing: T1S frames copied out of the W5500, nothing sent on T1S"
                       : "bridging 100BASE-TX <-> 10BASE-T1S");
   return err == ESP_OK;
@@ -189,7 +217,7 @@ inline void printStats() {
     if (e.seenMs && now - e.seenMs < kAgeMs) learned[e.side]++;
   portEXIT_CRITICAL(&gLock);
   if (gSniff) {
-    Serial.printf("sniff: T1S frames seen %lu, copied out %lu, dropped(W5500 busy) %lu err %lu; "
+    Con.printf("sniff: T1S frames seen %lu, copied out %lu, dropped(W5500 busy) %lu err %lu; "
                   "100BASE-TX frames ignored %lu\n",
                   (unsigned long)gStats.in[kT1s], (unsigned long)gStats.fwd[kT1s],
                   (unsigned long)gStats.noMem[kT1s], (unsigned long)gStats.err[kT1s],
@@ -198,10 +226,10 @@ inline void printStats() {
   }
   const char *name[2] = {"100BASE-TX -> T1S", "T1S -> 100BASE-TX"};
   for (int s = 0; s < 2; s++)
-    Serial.printf("bridge %s: in %lu fwd %lu kept-local %lu dropped(no TX room) %lu err %lu\n", name[s],
+    Con.printf("bridge %s: in %lu fwd %lu kept-local %lu dropped(no TX room) %lu err %lu\n", name[s],
                   (unsigned long)gStats.in[s], (unsigned long)gStats.fwd[s], (unsigned long)gStats.local[s],
                   (unsigned long)gStats.noMem[s], (unsigned long)gStats.err[s]);
-  Serial.printf("bridge table: %d stations on 100BASE-TX, %d on T1S\n", learned[kTx], learned[kT1s]);
+  Con.printf("bridge table: %d stations on 100BASE-TX, %d on T1S\n", learned[kTx], learned[kT1s]);
 }
 
 }  // namespace bridge
