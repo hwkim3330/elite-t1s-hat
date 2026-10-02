@@ -13,6 +13,7 @@
 #include <esp_eth.h>
 #include <esp_event.h>
 #include <esp_mac.h>
+#include <esp_timer.h>
 #include <esp_netif.h>
 #include <driver/gpio.h>
 #include <driver/spi_master.h>
@@ -367,35 +368,12 @@ static void cmdSink(bool reset) {
 
 // ---------------------------------------------------------------- bus counters
 
-// The LAN8651's MAC is a Cadence GEM behind the TC6 window (MMS 1, word addresses: the Linux
-// lan865x driver's NET_CTL 0x00, NET_CFG 0x01, HASH 0x20, SADDR 0x22 and TSU 0x77 are GEM's
-// byte offsets / 4). GEM's statistics block sits at bytes 0x100..0x1B0, and its counters clear
-// on read, so they are summed here. ASSUMED from that layout, not yet read on a real part:
-// the first `counters` on hardware should show frames tx/rx rising with ping.
-struct GemCounter { uint16_t word; const char *name; };
-static const GemCounter kGem[] = {
-    {0x42, "tx frames"},       {0x4E, "tx 1 collision"},  {0x4F, "tx multi collision"},
-    {0x50, "tx excess coll"},  {0x51, "tx late coll"},    {0x52, "tx deferred"},
-    {0x53, "tx carrier err"},  {0x56, "rx frames"},       {0x64, "rx fcs err"},
-    {0x66, "rx symbol err"},   {0x67, "rx align err"},    {0x68, "rx no buffer"},
-    {0x69, "rx overrun"},
-};
-constexpr int kGemN = sizeof(kGem) / sizeof(kGem[0]);
-static uint64_t gGemSum[kGemN];
-
-static void pollCounters() {
-  if (!gMac) return;
-  for (int i = 0; i < kGemN; i++) {
-    uint32_t v = 0;
-    if (esp_eth_mac_lan865x_read_reg(gMac, 1, kGem[i].word, &v) == ESP_OK) gGemSum[i] += v;
-  }
-}
-
-static void cmdCounters(bool reset) {
+// No MAC statistics here on purpose. A first version read a guessed Cadence-GEM statistics
+// block (MMS 1, words 0x42..0x69); on a real LAN8651 every value read 0 and the periodic read
+// stopped the chip transmitting (2026-10-02). Frame counts come from the driver input path
+// instead (`rx t1s` in status), which needs no register map.
+static void cmdCounters(bool) {
   if (!gMac) { Con.println("counters: no LAN8651"); return; }
-  pollCounters();
-  for (int i = 0; i < kGemN; i++)
-    Con.printf("%-20s %llu\n", kGem[i].name, (unsigned long long)gGemSum[i]);
   // TC6 STATUS0/1 (MMS 0): sticky error flags; BUFSTS: TX credits / RX chunks right now;
   // PLCA_STS (MMS 4 0xCA03) bit 15 = PST, beacons are being seen.
   uint32_t st0 = 0, st1 = 0, buf = 0, pst = 0;
@@ -407,7 +385,6 @@ static void cmdCounters(bool reset) {
                 (unsigned long)st0, (unsigned long)st1, (unsigned long)((buf >> 8) & 0xFF),
                 (unsigned long)(buf & 0xFF), (unsigned long)(pst & 0xFFFF),
                 !plcaWanted() ? "plca off" : (pst & 0x8000) ? "beacons seen" : "NO beacons");
-  if (reset) { memset(gGemSum, 0, sizeof(gGemSum)); Con.println("counters: reset"); }
 }
 
 // One line for Zenoh: what the node is running now, read back from the chip.
@@ -464,7 +441,7 @@ static void cmdPing(const char *host, int count) {
 // offered load the MAC-PHY accepted, not what arrived -- `sink` on the far node says that.
 // Each datagram starts with a 32-bit sequence number (little endian), so the receiver can
 // count loss and reordering and time the gaps between frames.
-static void cmdBlast(const char *host, int seconds, int size, int port = 9) {
+static void cmdBlast(const char *host, int seconds, int size, int port = 9, float mbit = 0) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in to = {};
   to.sin_family = AF_INET;
@@ -475,7 +452,18 @@ static void cmdBlast(const char *host, int seconds, int size, int port = 9) {
   memset(buf, 0xA5, sizeof(buf));
   uint32_t sent = 0, failed = 0;
   const uint32_t t0 = millis();
+  // mbit > 0: pace to that wire rate. A W5500 at 100 Mbit/s can offer ~15 Mbit/s, more than a
+  // 10 Mbit/s T1S bus behind a converter can take, so an unpaced blast measures the
+  // converter's buffer, not the bus.
+  const int64_t gapUs = mbit > 0 ? (int64_t)((size + 42) * 8 / mbit) : 0;
+  int64_t next = esp_timer_get_time();
   while (millis() - t0 < (uint32_t)seconds * 1000) {
+    if (gapUs) {
+      while (esp_timer_get_time() < next) {
+        if (next - esp_timer_get_time() > 2000) vTaskDelay(1);
+      }
+      next += gapUs;
+    }
     memcpy(buf, &sent, 4);
     if (sendto(s, buf, size, 0, (sockaddr *)&to, sizeof(to)) == size) sent++;
     else { failed++; delay(1); }  // ENOMEM when TX credits run out: back off, not spin
@@ -512,7 +500,7 @@ static void cmdStatus() {
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
   if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) bridge::printStats();
   else cmdSink(false);
-  if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); }
+  if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); bridge::printW5500Rx(); }
   else if (gCfg.mode == kModeNode) bridge::printRx(1, "t1s");
   netConsolePrintStatus();
   if (gEth) printPlca();
@@ -538,15 +526,17 @@ static void help() {
       "ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)\n"
       "spi <mhz>                  SPI clock, 1..25 (applied on reboot)\n"
       "ping <ip> [n]              ICMP over the T1S bus\n"
-      "blast <ip> [sec] [bytes] [port]  UDP (default port 9), seq-numbered, reports offered rate\n"
+      "blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it (0 = flat out)\n"
       "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
-      "counters [reset]           MAC frame/collision/error counters, TC6 status, PLCA beacons\n"
+      "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
+      "rxlog                      the last frames received: source, destination, type (and this board's MACs)\n"
+      "phy auto|10f|10h|100f|100h (mode tx) W5500 link mode\n"
       "promisc on|off             accept every frame on the wire (W5500 in tx mode, LAN8651 otherwise)\n"
       "zenoh                      zenoh-pico session over T1S (if built in)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
-      "wifi [<ssid> <pass> | ap]  join a WiFi network, or open own AP t1s-<id> (on reboot)\n"
+      "wifi [<ssid> <pass> | ap | off]  join a network, own AP t1s-<id>, or no radio (on reboot)\n"
       "ota <pass>                 OTA password (default t1s-ota, on reboot)\n"
       "save / reboot              write config to flash / restart\n"
       "(UDP echo on port 7 and the discard sink on port 9 always run in node mode)");
@@ -566,6 +556,26 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "phyreset")) bridge::phyReset();
+  else if (!strcmp(cmd, "phy") && n >= 1 && bridge::gNodeTx) {
+    // phy auto | 10f | 10h | 100f | 100h: written straight into PHYCFGR (the driver's speed /
+    // duplex ioctls did not change it on hardware). OPMDC: 000 10H, 001 10F, 010 100H, 011 100F,
+    // 111 all with autonegotiation; the mode loads across a PHY reset (bit 7 low, then high).
+    uint8_t opmdc = !strcmp(a, "10h") ? 0 : !strcmp(a, "10f") ? 1 : !strcmp(a, "100h") ? 2 : !strcmp(a, "100f") ? 3 : 7;
+    uint8_t v = 0x40 | (opmdc << 3);
+    w5500SpiWrite(gW5500Spi, 0x002E, 1 << 2, &v, 1);  // common block, write
+    delay(10);
+    v |= 0x80;
+    w5500SpiWrite(gW5500Spi, 0x002E, 1 << 2, &v, 1);
+    delay(2500);
+    bridge::printPhy();
+  }
+  else if (!strcmp(cmd, "rxlog")) {
+    bridge::printRxLog(0, "w5500");
+    bridge::printRxLog(1, "t1s");
+    uint8_t m[6];
+    if (gEth) { esp_eth_ioctl(gEth, ETH_CMD_G_MAC_ADDR, m); Con.printf("mac t1s   %02x:%02x:%02x:%02x:%02x:%02x\n", m[0], m[1], m[2], m[3], m[4], m[5]); }
+    if (bridge::gNodeTx) { esp_eth_ioctl(bridge::gNodeTx, ETH_CMD_G_MAC_ADDR, m); Con.printf("mac w5500 %02x:%02x:%02x:%02x:%02x:%02x\n", m[0], m[1], m[2], m[3], m[4], m[5]); }
+  }
   else if (!strcmp(cmd, "promisc") && n >= 1) {
     // take every frame the wire carries, not only ours + broadcast: tells "nothing arrives"
     // from "the MAC filter dropped it"
@@ -605,8 +615,9 @@ static void handleLine(char *line) {
   } else if (!strcmp(cmd, "ping") && n >= 1) cmdPing(a, n >= 2 ? atoi(b) : 5);
   else if (!strcmp(cmd, "blast") && n >= 1) {
     int sec = 5, size = 1472, port = 9;
-    sscanf(rest, "%*s %d %d %d", &sec, &size, &port);
-    cmdBlast(a, sec, size, constrain(port, 1, 65535));
+    float mbit = 0;
+    sscanf(rest, "%*s %d %d %d %f", &sec, &size, &port, &mbit);
+    cmdBlast(a, sec, size, constrain(port, 1, 65535), mbit);
   } else if (!strcmp(cmd, "reg") && n >= 1 && (a[0] == 'r' || a[0] == 'w')) cmdReg(a[0] == 'w', rest + strlen(a));
   else if (!strcmp(cmd, "mode") && n >= 1) {
     if (!strcmp(a, "bridge")) gCfg.mode = kModeBridge;
@@ -704,9 +715,8 @@ void loop() {
   char remote[100];
   if (zenohT1sTakeConfig(remote, sizeof(remote))) runRemoteConfig(remote);
   if (gRebootAtMs && (int32_t)(millis() - gRebootAtMs) >= 0) ESP.restart();
-  // GEM counters clear on read and are 32 bit: fold them into the totals every few seconds
-  static uint32_t tCnt = 0;
-  if (millis() - tCnt > 5000) { tCnt = millis(); pollCounters(); }
+  // No background register polling beyond PLCA_STS: an automatic read of the guessed GEM
+  // statistics block every 5 s stopped this LAN8651 from transmitting (2026-10-02, on hardware).
   // Board LED (the Elite's own, IO38) shows T1S state -- the LAN8651 has no LED function
   // of its own (its DIOA pins are event capture/generator only):
   //   PLCA on:  solid = beacons seen (PLCA_STS.PST), fast blink = no beacons

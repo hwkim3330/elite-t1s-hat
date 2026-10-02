@@ -176,12 +176,24 @@ static esp_eth_handle_t gNodeTx = nullptr;   // the W5500 in `mode tx`
 // arrive at all", with no chip register map to trust. Index 0 = W5500, 1 = LAN8651.
 struct RxCount { volatile uint32_t frames, bcast; volatile uint16_t lastType; };
 static RxCount gRx[2] = {};
+// the last few frames' headers per interface: who sent them, to whom, what type
+struct RxHdr { uint32_t ms; uint8_t dst[6], src[6]; uint16_t type, len; };
+static RxHdr gRxLog[2][6];
+static volatile uint8_t gRxLogN[2] = {0, 0};
 static esp_err_t countingInput(esp_eth_handle_t h, uint8_t *buf, uint32_t len, void *netif) {
   RxCount &c = gRx[h == gNodeTx ? 0 : 1];
   c.frames = c.frames + 1;
+  const int i = h == gNodeTx ? 0 : 1;
   if (len >= 14) {
     if (buf[0] == 0xFF) c.bcast = c.bcast + 1;
     c.lastType = (buf[12] << 8) | buf[13];
+    RxHdr &r = gRxLog[i][gRxLogN[i] % 6];
+    r.ms = millis();
+    memcpy(r.dst, buf, 6);
+    memcpy(r.src, buf + 6, 6);
+    r.type = c.lastType;
+    r.len = len;
+    gRxLogN[i] = gRxLogN[i] + 1;
   }
   return esp_netif_receive((esp_netif_t *)netif, buf, len, nullptr);
 }
@@ -189,6 +201,15 @@ inline void countInput(esp_eth_handle_t h, esp_netif_t *nif) { esp_eth_update_in
 inline void printRx(int i, const char *name) {
   Con.printf("rx %s: %lu frames (%lu broadcast), last ethertype 0x%04x\n", name, (unsigned long)gRx[i].frames,
              (unsigned long)gRx[i].bcast, gRx[i].lastType);
+}
+inline void printRxLog(int i, const char *name) {
+  const uint8_t n = gRxLogN[i];
+  for (int k = n > 6 ? n - 6 : 0; k < n; k++) {
+    const RxHdr &r = gRxLog[i][k % 6];
+    Con.printf("rxlog %s: %lu ms  %02x:%02x:%02x:%02x:%02x:%02x -> %02x:%02x:%02x:%02x:%02x:%02x  type 0x%04x  %u B\n",
+               name, (unsigned long)r.ms, r.src[0], r.src[1], r.src[2], r.src[3], r.src[4], r.src[5], r.dst[0],
+               r.dst[1], r.dst[2], r.dst[3], r.dst[4], r.dst[5], r.type, r.len);
+  }
 }
 
 // W5500 PHYCFGR as the chip reports it -- the link LED's truth, independent of driver events.
@@ -215,6 +236,28 @@ inline void phyReset() {
   esp_eth_ioctl(gNodeTx, ETH_CMD_WRITE_PHY_REG, &rw);
   delay(50);
   printPhy();
+}
+
+// One byte of any W5500 register, through our own SPI layer (w5500_spi.h): cmd = register
+// offset, addr = block << 3 (read). The driver's PHY-register path only takes PHYCFGR.
+inline int w5500Byte(uint16_t offset, uint8_t block) {
+  if (!gW5500Spi) return -1;
+  uint8_t v = 0;
+  return w5500SpiRead(gW5500Spi, offset, (uint32_t)block << 3, &v, 1) == ESP_OK ? v : -1;
+}
+// Socket 0 runs MACRAW: MR (0x00) should be 0x04 (+0x80 MAC filter), SR (0x03) 0x42 = MACRAW open,
+// RX_RSR (0x26) = bytes waiting in the chip, RX_RD (0x28) = how far the driver has read.
+inline void printW5500Rx() {
+  const int mr = w5500Byte(0x00, 1), sr = w5500Byte(0x03, 1), ir = w5500Byte(0x02, 1);
+  const int rsr = (w5500Byte(0x26, 1) << 8) | w5500Byte(0x27, 1);
+  const int rd = (w5500Byte(0x28, 1) << 8) | w5500Byte(0x29, 1);
+  const int wr = (w5500Byte(0x2A, 1) << 8) | w5500Byte(0x2B, 1);
+  Con.printf("w5500 s0: MR 0x%02x SR 0x%02x IR 0x%02x  RX_RSR %d  RX_RD 0x%04x RX_WR 0x%04x\n", mr, sr, ir, rsr, rd, wr);
+  const W5500Spi *sp = gW5500Spi;
+  if (sp)
+    Con.printf("w5500 spi: split %lu failures %lu retry-saved %lu fold-saved %lu lost %lu bounced %lu\n",
+               (unsigned long)sp->splitReads, (unsigned long)sp->failures, (unsigned long)sp->savedByRetry,
+               (unsigned long)sp->savedByFold, (unsigned long)sp->lost, (unsigned long)sp->bounced);
 }
 
 inline esp_netif_t *startNode(uint32_t ip, uint32_t mask) {

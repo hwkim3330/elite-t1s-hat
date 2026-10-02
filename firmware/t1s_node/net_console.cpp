@@ -14,6 +14,7 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <freertos/stream_buffer.h>
+#include <esp_heap_caps.h>
 
 #ifndef T1S_AP_PASS
 #define T1S_AP_PASS "t1s-bench"   // WPA2 needs >= 8 chars; change with -DT1S_AP_PASS=...
@@ -29,6 +30,7 @@ static StreamBufferHandle_t sIn = nullptr;    // bytes typed on the TCP client
 static SemaphoreHandle_t sOutLock = nullptr;  // a stream buffer takes one writer at a time
 static char sSsid[33] = "", sPass[65] = "", sOtaPass[33] = T1S_OTA_PASS, sHost[32] = "t1s-node";
 static volatile bool sOtaBusy = false, sClient = false;
+static bool sWifiOff = false;   // `wifi off`: no radio at all (saved)
 static volatile uint8_t sOtaPct = 0;
 
 size_t ConsoleTee::write(uint8_t c) { return write(&c, 1); }
@@ -55,6 +57,7 @@ static void loadNet() {
   p.getString("ssid", sSsid, sizeof(sSsid));
   p.getString("pass", sPass, sizeof(sPass));
   if (p.isKey("ota")) p.getString("ota", sOtaPass, sizeof(sOtaPass));
+  sWifiOff = p.getBool("off", false);
   p.end();
 }
 
@@ -64,6 +67,7 @@ static void saveNet() {
   p.putString("ssid", sSsid);
   p.putString("pass", sPass);
   p.putString("ota", sOtaPass);
+  p.putBool("off", sWifiOff);
   p.end();
 }
 
@@ -135,6 +139,7 @@ static void netTask(void *) {
 void netConsoleBegin(const char *tag) {
   loadNet();
   snprintf(sHost, sizeof(sHost), "t1s-%s", tag);
+  if (sWifiOff) { Serial.println("net: wifi off (saved) -- no WiFi console, no OTA; `wifi ap` to turn it back on"); return; }
   sOut = xStreamBufferCreate(4096, 1);
   sIn = xStreamBufferCreate(256, 1);
   sOutLock = xSemaphoreCreateMutex();
@@ -158,13 +163,15 @@ void netConsoleBegin(const char *tag) {
 
 bool netConsoleCommand(const char *cmd, const char *a, const char *b, int n) {
   if (!strcmp(cmd, "wifi")) {
-    if (n >= 1 && !strcmp(a, "ap")) { sSsid[0] = sPass[0] = 0; }
+    if (n >= 1 && !strcmp(a, "off")) { sWifiOff = true; }
+    else if (n >= 1 && !strcmp(a, "ap")) { sSsid[0] = sPass[0] = 0; sWifiOff = false; }
     else if (n >= 1) {
       strncpy(sSsid, a, sizeof(sSsid) - 1);
       strncpy(sPass, n >= 2 ? b : "", sizeof(sPass) - 1);
+      sWifiOff = false;
     } else { netConsolePrintStatus(); return true; }
     saveNet();
-    Con.printf("wifi: %s saved, applied on reboot\n", sSsid[0] ? sSsid : "own AP");
+    Con.printf("wifi: %s saved, applied on reboot\n", sWifiOff ? "OFF" : sSsid[0] ? sSsid : "own AP");
     return true;
   }
   if (!strcmp(cmd, "ota") && n >= 1) {
@@ -177,6 +184,12 @@ bool netConsoleCommand(const char *cmd, const char *a, const char *b, int n) {
 }
 
 void netConsolePrintStatus() {
+  Con.printf("heap: internal %u B free (DMA-capable %u, min ever %u), psram %u\n",
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
+             (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+  if (sWifiOff) { Con.println("wifi: OFF (saved)"); return; }
   if (sSsid[0])
     Con.printf("wifi: station on \"%s\", %s, ip %s, rssi %d dBm\n", sSsid,
                WiFi.status() == WL_CONNECTED ? "connected" : "NOT connected", WiFi.localIP().toString().c_str(),

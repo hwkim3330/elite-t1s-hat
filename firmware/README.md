@@ -132,12 +132,14 @@ csma                       PLCA off, plain CSMA/CD
 ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)
 spi <mhz>                  starting SPI clock 1..25, on reboot (default 25, steps down by itself)
 ping <ip> [n]              ICMP over the bus
-blast <ip> [sec] [bytes]   UDP to port 9, reports offered Mbit/s
+blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it
 sink [reset]               what arrived on this node's port 9, and at what rate
-counters [reset]           MAC counters (addresses NOT verified, read 0), TC6 status, PLCA beacons
+counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons
 identify [sec]             strobe the board LED to find the board
 promisc on|off             accept every frame (tells "nothing arrives" from "filtered")
 phyreset                   (mode tx) W5500 PHY reset with autonegotiation
+phy auto|10h|10f|100h|100f (mode tx) W5500 link mode, written to PHYCFGR
+rxlog                      last received frames: source, destination, type
 reg r|w <mms> <addr> [val] raw LAN8651 register (hex)
 save / reboot
 ```
@@ -151,16 +153,12 @@ the wiring can't carry fails install instead of corrupting data). The boot log p
 attempt, and `status` shows the clock it ended up on. A board that only came up at 12 MHz
 says so without anyone setting `spi 12`.
 
-**Counters.** The LAN8651's MAC is a Cadence GEM. Its statistics clear on read, so the
-firmware adds them up every 5 s and on `counters`. It shows frames tx/rx, single /
-multiple / excessive / late collisions, deferred, carrier errors, and rx FCS / symbol /
-alignment / no-buffer / overrun. It also prints TC6 STATUS0/1, the current TX credits /
-RX chunks, and PLCA_STS (beacons seen or not). The register addresses come from GEM's
-layout, and the Linux driver's MAC registers match that layout. **Read on a real LAN8651 (2026-10-02): every
-counter stayed 0 while the node was sending and receiving, so these addresses are wrong.**
-Treat `counters` as unverified. For frame counts, use the `rx t1s` / `rx w5500` lines in
-`status`, which count every frame a driver hands up (`bridge::countInput`) and need no
-register map.
+**Counters.** `counters` prints only registers the driver itself uses: TC6 STATUS0/1, the
+current TX credits / RX chunks, and PLCA_STS. A first version also read a guessed MAC
+statistics block (Cadence-GEM layout, MMS 1 words 0x42…0x69). On a real LAN8651 every
+value read 0, and **reading it every 5 s stopped the chip from transmitting**, so it is gone.
+Frame counts come from `rx t1s` / `rx w5500` in `status`, which count what the driver hands
+up and need no register map.
 
 ## First power-up: what each line means
 
