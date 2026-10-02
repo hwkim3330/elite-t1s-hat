@@ -509,6 +509,7 @@ static void cmdStatus() {
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
   if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) bridge::printStats();
   else cmdSink(false);
+  if (gCfg.mode == kModeTx) bridge::printPhy();
   netConsolePrintStatus();
   if (gEth) printPlca();
   // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads --

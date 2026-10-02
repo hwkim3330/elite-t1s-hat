@@ -170,8 +170,23 @@ inline esp_eth_handle_t w5500Install() {
 
 // W5500 as an ordinary lwIP interface: the 100BASE-TX end of a bench where a second board
 // stands in for the PC (`mode tx`). No LAN8651 involved.
+static esp_eth_handle_t gNodeTx = nullptr;   // the W5500 in `mode tx`
+
+// W5500 PHYCFGR as the chip reports it -- the link LED's truth, independent of driver events.
+// bit0 LNK, bit1 SPD (1 = 100), bit2 DPX (1 = full). The IDF driver maps every PHY register
+// register address is the W5500 map form, offset << 16 (common block = 0).
+inline void printPhy() {
+  if (!gNodeTx) return;
+  uint32_t v = 0;
+  esp_eth_phy_reg_rw_data_t rw = {.reg_addr = 0x002E << 16, .reg_value_p = &v};  // W5500_MAKE_MAP(PHYCFGR, common block)
+  const esp_err_t e = esp_eth_ioctl(gNodeTx, ETH_CMD_READ_PHY_REG, &rw);
+  Con.printf("w5500: PHYCFGR 0x%02lx (%s) -> cable %s, %s, %s duplex\n", (unsigned long)(v & 0xFF),
+             esp_err_to_name(e), (v & 1) ? "LINKED" : "NO LINK", (v & 2) ? "100M" : "10M", (v & 4) ? "full" : "half");
+}
+
 inline esp_netif_t *startNode(uint32_t ip, uint32_t mask) {
   esp_eth_handle_t tx = w5500Install();
+  gNodeTx = tx;
   if (!tx) return nullptr;
   esp_netif_config_t nifCfg = ESP_NETIF_DEFAULT_ETH();
   esp_netif_t *nif = esp_netif_new(&nifCfg);
