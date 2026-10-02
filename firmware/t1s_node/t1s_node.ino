@@ -9,6 +9,7 @@
 // Nothing here has run on hardware yet. Every place a first power-up could go wrong prints
 // what it saw rather than failing silently -- the chip ID, the SPI error, PLCA as read back.
 #include <Arduino.h>
+#include <algorithm>
 #include <Preferences.h>
 #include <esp_eth.h>
 #include <esp_event.h>
@@ -337,6 +338,26 @@ static void echoTask(void *) {
 
 // The receiving half of `blast`: count what arrives on port 9 and drop it. `sink` on this
 // node then says what the far side's offered load turned into after the bus.
+// Sink statistics, written by the sink task only. A `sink reset` is a request the task carries
+// out before its next packet, so the console never races it.
+struct SinkSeq {
+  uint32_t minSeq = UINT32_MAX, maxSeq = 0, last = 0, reordered = 0, dup = 0;
+  int64_t tPrev = 0, gapMax = 0;
+  uint32_t gapHist[101] = {};  // inter-arrival gaps, 20 us buckets; [100] = 2 ms and more
+  // a member, not a free function: Arduino's prototype pass would declare it before this struct
+  uint32_t gapPct(uint32_t total, float p) const {
+    uint32_t acc = 0, want = (uint32_t)(total * p);
+    for (int i = 0; i <= 100; i++) {
+      acc += gapHist[i];
+      if (acc > want) return i * 20 + 10;
+    }
+    return 2000;
+  }
+};
+static SinkSeq gSeq;
+static volatile bool gSinkResetReq = false;
+static uint32_t gSinkSeen[64];  // bitmap of the last 2048 seqs, for duplicates
+
 static void sinkTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in a = {};
@@ -347,11 +368,39 @@ static void sinkTask(void *) {
   for (;;) {
     int n = recv(s, buf, sizeof(buf), 0);
     if (n <= 0) continue;
+    const int64_t tus = esp_timer_get_time();
+    if (gSinkResetReq) {
+      gSinkPackets = 0;
+      gSinkBytes = 0;
+      gSeq = SinkSeq();
+      memset(gSinkSeen, 0, sizeof(gSinkSeen));
+      gSinkResetReq = false;
+    }
     const uint32_t now = millis();
     if (gSinkPackets == 0) gSinkT0 = now;
     gSinkLast = now;
     gSinkPackets = gSinkPackets + 1;
     gSinkBytes = gSinkBytes + n;
+    // blast puts a sequence number in the first 4 bytes (little endian)
+    if (n >= 4) {
+      uint32_t seq;
+      memcpy(&seq, buf, 4);
+      SinkSeq &q = gSeq;
+      uint32_t &w = gSinkSeen[(seq >> 5) & 63];
+      if (w & (1u << (seq & 31))) q.dup++;
+      w |= 1u << (seq & 31);
+      gSinkSeen[((seq >> 5) + 32) & 63] = 0;  // clear the window half ahead
+      if (gSinkPackets > 1 && seq < q.last) q.reordered++;
+      q.last = seq;
+      if (seq < q.minSeq) q.minSeq = seq;
+      if (seq > q.maxSeq) q.maxSeq = seq;
+    }
+    if (gSeq.tPrev) {
+      const int64_t g = tus - gSeq.tPrev;
+      gSeq.gapHist[g >= 2000 ? 100 : g / 20]++;
+      if (g > gSeq.gapMax) gSeq.gapMax = g;
+    }
+    gSeq.tPrev = tus;
   }
 }
 
@@ -363,7 +412,70 @@ static void cmdSink(bool reset) {
   const float mbit = secs > 0 ? (by + 42.0f * pk) * 8 / secs / 1e6f : 0.0f;
   Con.printf("sink: %lu packets, %llu B in %.1f s = %.2f Mbit/s on the wire\n",
                 (unsigned long)pk, (unsigned long long)by, secs, mbit);
-  if (reset) { gSinkPackets = 0; gSinkBytes = 0; Con.println("sink: counters reset"); }
+  const SinkSeq q = gSeq;
+  if (pk && q.maxSeq >= q.minSeq) {
+    const uint32_t expect = q.maxSeq - q.minSeq + 1, gaps = pk > 1 ? pk - 1 : 0;
+    Con.printf("sinkx: seq %lu..%lu expected %lu got %lu lost %ld reordered %lu dup %lu "
+               "gap_us p50 %lu p90 %lu p99 %lu max %lld\n",
+               (unsigned long)q.minSeq, (unsigned long)q.maxSeq, (unsigned long)expect, (unsigned long)pk,
+               (long)expect - (long)pk + (long)q.dup, (unsigned long)q.reordered, (unsigned long)q.dup,
+               (unsigned long)q.gapPct(gaps, 0.5f), (unsigned long)q.gapPct(gaps, 0.9f),
+               (unsigned long)q.gapPct(gaps, 0.99f), (long long)q.gapMax);
+  }
+  if (reset) { gSinkResetReq = true; gSinkPackets = 0; gSinkBytes = 0; Con.println("sink: counters reset"); }
+}
+
+// Round trip over UDP echo (port 7 on every t1s_node) with the us timer: the latency figure
+// `ping` cannot give (its timer is 1 ms). Prints a summary, then every sample, 25 per line.
+static void cmdRtt(const char *host, int count, int size, int intervalMs) {
+  count = constrain(count, 1, 1000);
+  size = constrain(size, 12, 1472);
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(7);
+  if (!inet_aton(host, &to.sin_addr)) { Con.println("rtt: bad address"); close(s); return; }
+  timeval tv = {0, 100000};
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  static uint8_t buf[1472], in[1536];
+  static int32_t rtt[1000];
+  memset(buf, 0x5A, sizeof(buf));
+  int lost = 0;
+  for (int i = 0; i < count; i++) {
+    const uint32_t seq = 0x52540000u + i;
+    memcpy(buf, &seq, 4);
+    const int64_t t0 = esp_timer_get_time();
+    sendto(s, buf, size, 0, (sockaddr *)&to, sizeof(to));
+    rtt[i] = -1;
+    for (;;) {
+      int n = recv(s, in, sizeof(in), 0);
+      if (n <= 0) break;  // timeout
+      uint32_t got;
+      memcpy(&got, in, 4);
+      if (got == seq) { rtt[i] = (int32_t)(esp_timer_get_time() - t0); break; }
+    }
+    if (rtt[i] < 0) lost++;
+    if (intervalMs > 0) delay(intervalMs);
+  }
+  close(s);
+  static int32_t sorted[1000];
+  int m = 0;
+  int64_t sum = 0;
+  for (int i = 0; i < count; i++)
+    if (rtt[i] >= 0) { sorted[m++] = rtt[i]; sum += rtt[i]; }
+  std::sort(sorted, sorted + m);
+  if (m)
+    Con.printf("rtt: n %d size %d lost %d min %ld avg %lld p50 %ld p90 %ld p99 %ld max %ld us\n", count, size, lost,
+               (long)sorted[0], (long long)(sum / m), (long)sorted[m / 2], (long)sorted[m * 9 / 10],
+               (long)sorted[m * 99 / 100], (long)sorted[m - 1]);
+  else
+    Con.printf("rtt: n %d size %d lost %d (no replies)\n", count, size, lost);
+  char line[256];
+  for (int i = 0; i < count; i += 25) {
+    int o = snprintf(line, sizeof(line), "rtts:");
+    for (int k = i; k < count && k < i + 25; k++) o += snprintf(line + o, sizeof(line) - o, " %ld", (long)rtt[k]);
+    Con.println(line);
+  }
 }
 
 // ---------------------------------------------------------------- bus counters
@@ -527,7 +639,8 @@ static void help() {
       "spi <mhz>                  SPI clock, 1..25 (applied on reboot)\n"
       "ping <ip> [n]              ICMP over the T1S bus\n"
       "blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it (0 = flat out)\n"
-      "sink [reset]               what arrived on port 9 here (the far end of blast)\n"
+      "sink [reset]               what arrived on port 9 here: rate, seq loss/reorder, arrival gaps\n"
+      "rtt <ip> [n] [bytes] [ms]  UDP echo round trip in us (default 100 x 64 B, 5 ms apart)\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
@@ -613,6 +726,11 @@ static void handleLine(char *line) {
     gCfg.spiMhz = constrain(atoi(a), 1, 25);
     Con.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
   } else if (!strcmp(cmd, "ping") && n >= 1) cmdPing(a, n >= 2 ? atoi(b) : 5);
+  else if (!strcmp(cmd, "rtt") && n >= 1) {
+    int cnt = 100, size = 64, iv = 5;
+    sscanf(rest, "%*s %d %d %d", &cnt, &size, &iv);
+    cmdRtt(a, cnt, size, iv);
+  }
   else if (!strcmp(cmd, "blast") && n >= 1) {
     int sec = 5, size = 1472, port = 9;
     float mbit = 0;
@@ -663,6 +781,7 @@ static void runRemoteConfig(const char *text) {
 
 void setup() {
   Serial.begin(115200);
+  Con.begin();
   delay(1500);  // let USB CDC enumerate so the bring-up log is not lost
   Con.println("\n== T1S HAT node (LAN8651 on T-ETH-Elite) ==");
   pinMode(kPinBoardLed, OUTPUT);

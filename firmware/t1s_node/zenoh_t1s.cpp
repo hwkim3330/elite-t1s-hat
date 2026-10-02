@@ -131,11 +131,17 @@ static bool start() {
 void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
   if (!sWanted || !netUp) return;
   if (!sUp) {
-    static uint32_t tTry = 0;
-    if (millis() - tTry < 3000) return;
+    // No router: retry 3 s, 6, 12 ... up to 30 s apart, so an absent router does not fill the
+    // console (and does not cost the bus a burst of ARPs every 3 s).
+    static uint32_t tTry = 0, gap = 3000;
+    static uint16_t fails = 0;
+    if (millis() - tTry < gap) return;
     tTry = millis();
+    if (fails) gap = gap * 2 > 30000 ? 30000 : gap * 2;
+    fails++;
     snprintf(sNode, sizeof(sNode), "t1s-hat-%d", plcaId < 0 ? 0 : plcaId);
     sUp = start();
+    if (sUp) { gap = 3000; fails = 0; }
     return;
   }
   if (sAckPending) {

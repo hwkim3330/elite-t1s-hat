@@ -35,13 +35,18 @@ static volatile uint8_t sOtaPct = 0;
 
 size_t ConsoleTee::write(uint8_t c) { return write(&c, 1); }
 
+void ConsoleTee::begin() {
+  if (!sOutLock) sOutLock = xSemaphoreCreateMutex();
+}
+
+// One write = one printf line (Print::printf formats first, then writes once). The lock keeps
+// lines from two tasks whole on USB serial too: without it, a zenoh retry message printed while
+// `blast` reported cut the report in half (seen on hardware).
 size_t ConsoleTee::write(const uint8_t *buf, size_t n) {
+  const bool locked = sOutLock && xSemaphoreTake(sOutLock, pdMS_TO_TICKS(200)) == pdTRUE;
   Serial.write(buf, n);
-  // never block a printing task: if nobody is draining (no client), drop the oldest
-  if (sOut && sClient && xSemaphoreTake(sOutLock, pdMS_TO_TICKS(5)) == pdTRUE) {
-    xStreamBufferSend(sOut, buf, n, 0);
-    xSemaphoreGive(sOutLock);
-  }
+  if (sOut && sClient) xStreamBufferSend(sOut, buf, n, 0);  // never blocks: full = dropped
+  if (locked) xSemaphoreGive(sOutLock);
   return n;
 }
 
@@ -142,7 +147,7 @@ void netConsoleBegin(const char *tag) {
   if (sWifiOff) { Serial.println("net: wifi off (saved) -- no WiFi console, no OTA; `wifi ap` to turn it back on"); return; }
   sOut = xStreamBufferCreate(4096, 1);
   sIn = xStreamBufferCreate(256, 1);
-  sOutLock = xSemaphoreCreateMutex();
+  Con.begin();
   // the task first, then WiFi (see the header)
   if (!sOut || !sIn || !sOutLock || xTaskCreate(netTask, "net_con", 6144, nullptr, 2, nullptr) != pdPASS) {
     Serial.println("net: task/buffer alloc FAILED -- no WiFi console, no OTA");

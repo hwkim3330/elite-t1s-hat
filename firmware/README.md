@@ -133,7 +133,8 @@ ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)
 spi <mhz>                  starting SPI clock 1..25, on reboot (default 25, steps down by itself)
 ping <ip> [n]              ICMP over the bus
 blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it
-sink [reset]               what arrived on this node's port 9, and at what rate
+sink [reset]               what arrived on port 9: rate, then `sinkx:` seq loss / reorder / dup, arrival-gap p50/p90/p99/max
+rtt <ip> [n] [bytes] [ms]  UDP echo round trip timed in us (one in flight), summary + every sample (`rtts:`)
 counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons
 identify [sec]             strobe the board LED to find the board
 promisc on|off             accept every frame (tells "nothing arrives" from "filtered")
