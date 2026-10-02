@@ -62,6 +62,7 @@ static volatile uint32_t sRttN = 0;
 struct Echo { char who[24]; char body[40]; };
 static Echo sEchoQ[8];
 static volatile uint8_t sEchoHead = 0, sEchoTail = 0;
+static TaskHandle_t sZTask = nullptr;  // woken by a ping callback, so the echo goes out at once
 
 // bulk receive side (any other board's t1s/*/bulk)
 struct BulkRx { uint32_t msgs = 0, bytes = 0, minSeq = UINT32_MAX, maxSeq = 0; int64_t t0 = 0, t1 = 0; };
@@ -129,6 +130,7 @@ static void onPingAll(z_loaned_sample_t *sample, void *) {
   if (next == sEchoTail) return;  // queue full: dropped, the sender counts it as lost
   sEchoQ[sEchoHead] = e;
   sEchoHead = next;
+  if (sZTask) xTaskNotifyGive(sZTask);  // echo now, not on the next 2 ms pass
 }
 
 static void onBulk(z_loaned_sample_t *sample, void *) {
@@ -168,10 +170,13 @@ static void onConfig(z_loaned_sample_t *sample, void *) {
   portEXIT_CRITICAL(&sMbx);
 }
 
-static bool declarePub(z_owned_publisher_t &p, const char *ke) {
+static bool declarePub(z_owned_publisher_t &p, const char *ke, bool express = false) {
   z_view_keyexpr_t k;
   z_view_keyexpr_from_str_unchecked(&k, ke);
-  return z_declare_publisher(z_session_loan(&sSession), &p, z_view_keyexpr_loan(&k), NULL) == 0;
+  z_publisher_options_t o;
+  z_publisher_options_default(&o);
+  o.is_express = express;  // latency-critical keys skip batching
+  return z_declare_publisher(z_session_loan(&sSession), &p, z_view_keyexpr_loan(&k), &o) == 0;
 }
 
 static bool declareSub(z_owned_subscriber_t &s, const char *ke, void (*cb)(z_loaned_sample_t *, void *)) {
@@ -206,7 +211,7 @@ static bool start() {
   bool ok = true;
   snprintf(ke, sizeof(ke), "t1s/%s/hello", sNode);   ok &= declarePub(sHello, ke);
   snprintf(ke, sizeof(ke), "t1s/%s/signal", sNode);  ok &= declarePub(sSignal, ke);
-  snprintf(ke, sizeof(ke), "test/ping/%s", sNode);   ok &= declarePub(sPing, ke);
+  snprintf(ke, sizeof(ke), "test/ping/%s", sNode);   ok &= declarePub(sPing, ke, true);
   snprintf(ke, sizeof(ke), "test/stats/%s", sNode);  ok &= declarePub(sStats, ke);
   snprintf(ke, sizeof(ke), "t1s/%s/bulk", sNode);    ok &= declarePub(sBulk, ke);
   snprintf(ke, sizeof(ke), "test/pong/%s", sNode);   ok &= declareSub(sPong, ke, onPong);
@@ -277,7 +282,10 @@ void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
     z_view_keyexpr_from_str_unchecked(&k, ke);
     z_owned_bytes_t b;
     z_bytes_copy_from_str(&b, e.body);
-    if (z_put(z_session_loan(&sSession), z_view_keyexpr_loan(&k), z_bytes_move(&b), NULL) == 0) sEchoed++;
+    z_put_options_t po;
+    z_put_options_default(&po);
+    po.is_express = true;
+    if (z_put(z_session_loan(&sSession), z_view_keyexpr_loan(&k), z_bytes_move(&b), &po) == 0) sEchoed++;
     sEchoTail = (sEchoTail + 1) % 8;
   }
   static uint32_t tPing = 0, tHello = 0, tSig = 0, tStats = 0;
@@ -398,7 +406,8 @@ static void zenohTask(void *) {
   for (;;) {
     const uint8_t id = *sArgs.id;
     zenohT1sLoop(*sArgs.up, id == sArgs.off ? -1 : id, *sArgs.cnt);
-    vTaskDelay(pdMS_TO_TICKS(2));
+    // sleep up to 2 ms, or until a ping arrives (its echo should not wait for the next pass)
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(2));
   }
 }
 
@@ -409,7 +418,7 @@ void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_
     sFixedName = true;
   }
   sArgs = {netUp, plcaId, plcaCount, plcaOff};
-  xTaskCreate(zenohTask, "zenoh_t1s", 12288, nullptr, 3, nullptr);
+  xTaskCreate(zenohTask, "zenoh_t1s", 12288, nullptr, 3, &sZTask);
 }
 
 #else  // built without T1S_WITH_ZENOH

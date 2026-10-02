@@ -250,3 +250,10 @@ zenoh [status] | pause | resume | ping <hz> | rtts [reset] | blast <sec> <bytes>
 
 Measured on the two-ESP bench (2026-10-02, report in `t1s-eval/two-esp/`): pub/sub RTT 5.6–6.0 ms
 median; receive tops out near 1000 msg/s in zenoh-pico; up to 5.5 Mbit/s of payload.
+
+Where the Zenoh round trip goes: raw UDP between the same two boards is 2.97 ms (most of it the
+W5500's 1 ms receive poll on the ESP-B side; PC ↔ HAT measured 0.85 ms), so zenoh-pico adds about
+3 ms. Two changes to this firmware did not move it (median 6.11 → 6.19 / 6.14 ms): echoing a ping
+the moment its callback fires (task notification instead of the 2 ms loop), and publishing ping
+and pong as `is_express`. Both stay, being correct and harmless; the remaining cost is inside
+zenoh-pico's receive/executor path on this port.
