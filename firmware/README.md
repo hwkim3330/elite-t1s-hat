@@ -209,9 +209,11 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
 - **SPI clock:** 25 MHz is now the default, with the automatic step-down above. A LAN8651
   HAT on this firmware ran clean at 25 MHz: 9.0 Mbit/s to the node and 9.5 from it,
   against 6.0 / 6.3 at 12 MHz. The step-down itself has not run on hardware.
-- **Written without hardware (2026-10-01/02), builds with and without zenoh, never run:**
-  the SPI step-down, `counters`, sniff mode, Zenoh remote config, `mode tx`, the WiFi
-  console and OTA.
+- **Run on hardware (2026-10-02, three Elite boards):** `mode tx`, the SPI step-down (no HAT:
+  25 → 20 → 12 → 4, fails cleanly, console stays up), the WiFi AP + TCP console (a PC joined
+  `t1s-9c3c` and ran `status` over `nc`), **OTA** (espota over the AP, 1.17 MB in 14.7 s,
+  `ota: done` → reboot → LAN8651 up → Zenoh session up), Zenoh peer-to-peer, `rtt`, sink
+  statistics. **Not run:** sniff mode, bridge mode with this firmware, Zenoh remote config.
 
 ## Zenoh-pico over T1S (optional)
 
