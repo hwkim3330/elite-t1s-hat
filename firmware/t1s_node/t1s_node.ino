@@ -690,6 +690,79 @@ static void cmdEvt(const char *rest) {
   else Con.printf("evt: %s seq %lu no ack within 50 ms\n", evtName(code), (unsigned long)m.seq);
 }
 
+// ---------------------------------------------------------------- time transfer (`sync`)
+// Two-way time transfer, the exchange PTP and NTP use, with software timestamps: the asker sends
+// t1 (its clock), the answerer stamps t2 on receipt and t3 on reply (its clock), the asker stamps
+// t4. offset = ((t2 - t1) + (t3 - t4)) / 2 (answerer minus asker), delay = ((t4 - t1) - (t3 - t2)) / 2.
+// Stamps are esp_timer (us) taken in the UDP task, so they include lwIP and, on a W5500 board,
+// its 1 ms receive poll: this measures what software time sync over this bench can reach.
+struct SyncMsg { uint32_t magic, seq; int64_t t1, t2, t3; };
+static constexpr uint32_t kSyncMagic = 0x53594e43;   // "SYNC"
+
+static void syncTask(void *) {
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in a = {};
+  a.sin_family = AF_INET;
+  a.sin_port = htons(5007);
+  a.sin_addr.s_addr = htonl(INADDR_ANY);
+  bind(s, (sockaddr *)&a, sizeof(a));
+  SyncMsg m;
+  for (;;) {
+    sockaddr_in from = {};
+    socklen_t fl = sizeof(from);
+    if (recvfrom(s, &m, sizeof(m), 0, (sockaddr *)&from, &fl) != (int)sizeof(m)) continue;
+    const int64_t t2 = esp_timer_get_time();
+    if (m.magic != kSyncMagic) continue;
+    m.t2 = t2;
+    m.t3 = esp_timer_get_time();
+    sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);
+  }
+}
+
+static void cmdSync(const char *rest) {
+  char host[16] = "";
+  int count = 500, ivMs = 20;
+  if (sscanf(rest, "%15s %d %d", host, &count, &ivMs) < 1) { Con.println("sync <ip> [n] [ms]"); return; }
+  count = constrain(count, 1, 2000);
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(5007);
+  if (!inet_aton(host, &to.sin_addr)) { Con.println("sync: bad address"); close(s); return; }
+  timeval tv = {0, 100000};
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  // per exchange: t1 (asker, us since boot), offset and delay (us); printed after the run
+  static int64_t T1[2000];
+  static int32_t OFF[2000], DLY[2000];
+  int got = 0;
+  SyncMsg m, in;
+  for (int i = 0; i < count; i++) {
+    m = {kSyncMagic, (uint32_t)i, esp_timer_get_time(), 0, 0};
+    sendto(s, &m, sizeof(m), 0, (sockaddr *)&to, sizeof(to));
+    for (;;) {
+      if (recv(s, &in, sizeof(in), 0) != (int)sizeof(in)) break;   // timeout: lost
+      const int64_t t4 = esp_timer_get_time();
+      if (in.seq != m.seq) continue;
+      T1[got] = in.t1;
+      OFF[got] = (int32_t)(((in.t2 - in.t1) + (in.t3 - t4)) / 2);
+      DLY[got] = (int32_t)(((t4 - in.t1) - (in.t3 - in.t2)) / 2);
+      got++;
+      break;
+    }
+    if (ivMs > 0) delay(ivMs);
+  }
+  close(s);
+  Con.printf("sync: n %d answered %d (interval %d ms)\n", count, got, ivMs);
+  char line[240];
+  for (int i = 0; i < got; i += 10) {
+    int o = snprintf(line, sizeof(line), "syncs:");
+    for (int k = i; k < got && k < i + 10; k++)
+      o += snprintf(line + o, sizeof(line) - o, " %lld,%ld,%ld", (long long)(T1[k] - T1[0]), (long)OFF[k], (long)DLY[k]);
+    Con.println(line);
+  }
+  Con.println("sync: done");
+}
+
 static void cmdRtt(const char *host, int count, int size, int intervalMs) {
   count = constrain(count, 1, 1000);
   size = constrain(size, 12, 1472);
@@ -917,6 +990,7 @@ static void help() {
       "rtt <ip> [n] [bytes] [ms]  UDP echo round trip in us (default 100 x 64 B, 5 ms apart)\n"
       "w <steer> <y> <z> <rz> [btn]  latest operator input (the PC's wheel feed; silent)\n"
       "ctl <ip> [ms] [sec] [dl ms]  16 B control messages to <ip>'s echo: every ms, or 0 = on change\n"
+      "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange, software stamps): offset, delay\n"
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
@@ -1042,6 +1116,7 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "w")) cmdWheel(rest);
   else if (!strcmp(cmd, "ctl")) cmdCtl(rest);
   else if (!strcmp(cmd, "evt")) cmdEvt(rest);
+  else if (!strcmp(cmd, "sync")) cmdSync(rest);
   else if (!strcmp(cmd, "rtt") && n >= 1) {
     int cnt = 100, size = 64, iv = 5;
     sscanf(rest, "%*s %d %d %d", &cnt, &size, &iv);
@@ -1114,6 +1189,7 @@ void setup() {
       xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
       xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
+    xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
       // Zenoh peer on the W5500 too, named after the chip: t1s-eth-<last 2 MAC bytes>
       static char zname[24];
       uint8_t m[6];
@@ -1135,6 +1211,7 @@ void setup() {
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
+    xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
     zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
