@@ -329,8 +329,26 @@ at a whole-ms spacing every request meets the master's 1 ms W5500 poll at the sa
 min-delay pick has nothing to choose from. Against ESP-B (software stamps, W5500) on 2026-10-06:
 offset after 20 s **mean −3.4 µs, σ 32 µs** (max 130), frequency held at **−22.3 ppm** (the HAT's
 25 MHz crystal against the ESP32's); ptp4l's gains (0.7 / 0.3) amplify this bench's ~50 µs
-measurement noise into ±40 ppm swings, 0.2 / 0.02 is the default. A master with hardware stamps
-(a second LAN8651) removes most of that noise.
+measurement noise into ±40 ppm swings, 0.2 / 0.02 is the default.
+
+Then, on the master's side (ESP-B), step by step, 120 s runs, offset after 20 s:
+
+| change | σ | max | one-way delay p50 |
+|---|---|---|---|
+| W5500 polled every 1 ms (above) | 32 µs | 130 µs | 750 µs |
+| **W5500 interrupt on IO14** (the Elite wires INTn there) | 18.5 µs | 52 µs | 736 µs |
+| **+ t2 stamped at the driver** (RX tap, before lwIP and the socket task) | 11.6–14.9 µs | 28–48 µs | 520 µs |
+| t3 taken after the send returned (two-step) -- reverted | 23 µs | 78 µs | 193 µs |
+
+Mean offset −0.3 … −1 µs, frequency −20.8 … −21.0 ppm ± 2.5–3 ppm. The rest is the master's
+software stamps and the converter; two LAN8651 nodes (hardware on both ends) are the next step,
+and the servo already uses a master's hardware follow-up when it gets one.
+
+**Throughput cost.** `-DLAN865X_FRAME_TIMESTAMPS` adds an 8-byte stamp to every received frame on
+SPI: onto T1S (1472 B, 9.5 offered) 8.75 → 8.20 Mbit/s (−6 %); transmit unchanged. Hence a build
+option, not the default. The W5500 interrupt costs nothing (8.76 polled, 8.75 interrupt) and lifts
+64 B frames from 1.97 to 2.26 Mbit/s; `-DW5500_POLL` keeps the old 1 ms poll for comparisons with
+runs taken before 2026-10-06 evening.
 
 ### Flashing after an OTA
 

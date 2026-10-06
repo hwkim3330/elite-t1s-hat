@@ -698,7 +698,7 @@ static void cmdEvt(const char *rest) {
 // its 1 ms receive poll: this measures what software time sync over this bench can reach.
 struct SyncMsg { uint32_t magic, seq; int64_t t1, t2, t3; };
 static constexpr uint32_t kSyncMagic = 0x53594e43;   // "SYNC"
-static constexpr uint32_t kSyncFollow = 0x53594e46;  // "SYNF": the answerer's hardware stamps, sent after
+static constexpr uint32_t kSyncFollow = 0x53594e46;  // "SYNF": the answerer's hardware stamps (ns), sent after
 
 // Hardware stamps (`ptp on`): the LAN8651 stamps a frame's ingress and, when asked, its egress
 // with its own wall clock (TSU, 25 MHz, 40 ns per tick), seconds:nanoseconds. The driver hooks
@@ -732,6 +732,21 @@ static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
   gRxStamp[seq & 63].seq = seq;
   gPtpRx = gPtpRx + 1;
 }
+// Software stamp at the driver (any board, W5500 or LAN8651): taken when the frame comes off SPI, so it
+// skips lwIP and the socket task's wake-up. The answerer uses it as t2 when it has no hardware stamp.
+static HwStamp gDrvRx[64];
+static void onDrvRx(esp_eth_handle_t, const uint8_t *f, uint32_t len) {
+  uint16_t sp, dp;
+  const uint8_t *p = udpOf(f, len, sp, dp);
+  if (!p || dp != 5007) return;
+  uint32_t magic, seq;
+  memcpy(&magic, p, 4);
+  memcpy(&seq, p + 4, 4);
+  if (magic != kSyncMagic) return;
+  gDrvRx[seq & 63].ns = esp_timer_get_time();   // us
+  gDrvRx[seq & 63].seq = seq;
+}
+
 static bool wantTxStamp(const uint8_t *f, uint32_t len) {
   uint16_t sp, dp;
   const uint8_t *p = udpOf(f, len, sp, dp);
@@ -854,8 +869,20 @@ static void lockTask(void *) {
         if (in.magic == kSyncMagic && in.seq == m.seq) { got = true; break; }
       }
       const HwStamp r = gRxStamp[m.seq & 63];
+      int64_t t2 = in.t2 * 1000, t3 = in.t3 * 1000;
+      if (got) {   // a master with `ptp on` (a LAN8651) sends its hardware t2/t3 (ns) in a follow-up
+        SyncMsg fu;
+        timeval tf = {0, 5000};
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tf, sizeof(tf));
+        while (recv(s, &fu, sizeof(fu), 0) == (int)sizeof(fu)) {
+          if (fu.seq != m.seq) continue;
+          if (fu.magic == kSyncFollow && fu.t2 >= 0 && fu.t3 >= 0) { t2 = fu.t2; t3 = fu.t3; }
+          break;
+        }
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+      }
       if (got && t1 >= 0 && r.seq == m.seq) {
-        const int64_t t4 = r.ns, t2 = in.t2 * 1000, t3 = in.t3 * 1000;
+        const int64_t t4 = r.ns;
         const int64_t off = ((t2 - t1) + (t3 - t4)) / 2, dly = ((t4 - t1) - (t3 - t2)) / 2;
         if (dly < bestDly) { bestDly = dly; bestOff = off; }
         ok++;
@@ -916,11 +943,15 @@ static void syncTask(void *) {
     sockaddr_in from = {};
     socklen_t fl = sizeof(from);
     if (recvfrom(s, &m, sizeof(m), 0, (sockaddr *)&from, &fl) != (int)sizeof(m)) continue;
-    const int64_t t2 = esp_timer_get_time();
+    int64_t t2 = esp_timer_get_time();
     if (m.magic != kSyncMagic) continue;
+    const HwStamp dr = gDrvRx[m.seq & 63];
+    if (dr.seq == m.seq && dr.ns > 0 && dr.ns <= t2) t2 = dr.ns;   // the driver-level stamp, if it saw it
     m.t2 = t2;
     m.t3 = esp_timer_get_time();
     sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);
+    // No software two-step: a t3 taken after the send returned (SPI write and task switch included)
+    // scattered more than the one taken just before it -- measured 2026-10-06, sigma 23 vs 14 us.
     if (gPtpOn) {   // like PTP's Follow_Up: the precise times go out after the message they describe
       const int64_t t3h = takeTxStamp();
       const HwStamp r = gRxStamp[m.seq & 63];
@@ -1433,6 +1464,7 @@ void setup() {
       xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
       xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
+    bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
       // Zenoh peer on the W5500 too, named after the chip: t1s-eth-<last 2 MAC bytes>
       static char zname[24];
@@ -1455,6 +1487,7 @@ void setup() {
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
+    bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
     zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);

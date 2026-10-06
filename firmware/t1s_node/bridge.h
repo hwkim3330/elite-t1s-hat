@@ -35,9 +35,13 @@
 #include "net_console.h"
 
 // The Elite's W5500, as measured on the W5500 bench (LilyGo's schematic agrees on these four).
-// Polled, not interrupt-driven: that project found no working INT line on its boards, and a
-// 1 ms poll is what it measured best with.
+// That project found no working INT line and polled every 1 ms; on these boards INTn on IO14 works
+// (2026-10-06), see kPinEthInt.
 constexpr int kPinEthSclk = 48, kPinEthMiso = 47, kPinEthMosi = 21, kPinEthCs = 45;
+// The W5500's INTn is wired to IO14 on the T-ETH-Elite (LilyGo's own pin map). Used, a received frame
+// is fetched at once; polled every 1 ms instead, every reply waited 0-1 ms for the next poll -- the
+// millisecond steps in all ESP-B round trips and the dominant error of time sync over this bench.
+constexpr int kPinEthInt = 14;
 constexpr int kEthSpiMhz = 40;  // measured ceiling on the W5500 bench: 80 fails, 40 == 60
 
 namespace bridge {
@@ -179,8 +183,15 @@ inline esp_eth_handle_t w5500Install() {
 
   // static: the custom SPI driver keeps a pointer to this config
   static eth_w5500_config_t w = ETH_W5500_DEFAULT_CONFIG(SPI2_HOST, &dev);
+  // interrupt-driven receive (IO14); `-DW5500_POLL` keeps the old 1 ms poll for comparison
+#ifdef W5500_POLL
   w.int_gpio_num = -1;
   w.poll_period_ms = 1;
+#else
+  gpio_install_isr_service(0);   // already installed is fine (ESP_ERR_INVALID_STATE)
+  w.int_gpio_num = kPinEthInt;
+  w.poll_period_ms = 0;
+#endif
   w.custom_spi_driver.config = &w;
   w.custom_spi_driver.init = w5500SpiInit;
   w.custom_spi_driver.deinit = w5500SpiDeinit;
@@ -217,7 +228,11 @@ static RxCount gRx[2] = {};
 struct RxHdr { uint32_t ms; uint8_t dst[6], src[6]; uint16_t type, len; };
 static RxHdr gRxLog[2][6];
 static volatile uint8_t gRxLogN[2] = {0, 0};
+// A tap on every received frame, called in the Ethernet driver's RX task right after the frame left
+// the chip -- earlier than any socket can see it. t1s_node uses it to stamp the time-sync exchange.
+static void (*gRxTap)(esp_eth_handle_t h, const uint8_t *buf, uint32_t len) = nullptr;
 static esp_err_t countingInput(esp_eth_handle_t h, uint8_t *buf, uint32_t len, void *netif) {
+  if (gRxTap) gRxTap(h, buf, len);
   captureRecord(h == gNodeTx ? 0 : 1, buf, len);
   RxCount &c = gRx[h == gNodeTx ? 0 : 1];
   c.frames = c.frames + 1;
