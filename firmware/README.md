@@ -273,11 +273,15 @@ multicast TTL, so the vendored copy is patched: [`zenoh-pico-multicast-ttl1.patc
 `<node>` is `t1s-hat-<PLCA id>` on a HAT node and `t1s-eth-<mac>` on a W5500-only board.
 
 ```
-zenoh [status] | pause | resume | ping <hz> | rtts [reset] | blast <sec> <bytes> | sink [reset]
+zenoh [status] | pause | resume | ping <hz> | rtts [reset] | blast <sec> <bytes> [batch] | sink [reset]
 ```
 
 Measured on the two-ESP bench (2026-10-02, report in `t1s-eval/two-esp/`): pub/sub RTT 5.6–6.0 ms
-median; receive tops out near 1000 msg/s in zenoh-pico; up to 5.5 Mbit/s of payload.
+median; up to 5.5 Mbit/s of payload. Small messages stop near 1000/s — on the **publisher**: unbatched,
+every put is its own UDP datagram and the put call takes ~1 ms; the subscriber received every one it was
+sent. `zenoh blast <s> <B> batch` wraps the run in `zp_batch_start/stop`: 64 B puts then take ~130–150 µs
+and reach ~5500–6000 msg/s (2026-10-06, SPI 20 MHz); 1024 B gains nothing (one message fills a datagram).
+Batching delays each put until its batch is flushed, so it is for bulk, not control traffic.
 
 Where the Zenoh round trip goes: raw UDP between the same two boards is 2.97 ms (most of it the
 W5500's 1 ms receive poll on the ESP-B side; PC ↔ HAT measured 0.85 ms). Echoing a ping the moment

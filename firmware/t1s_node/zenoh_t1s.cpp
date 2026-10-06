@@ -70,6 +70,7 @@ static BulkRx sBulkRx;
 static volatile bool sBulkReset = false;
 // bulk send request, carried out by the zenoh task
 static volatile uint32_t sBlastSecs = 0, sBlastBytes = 0;
+static volatile bool sBlastBatch = false;
 
 static void put(z_owned_publisher_t &p, const char *s) {
   z_owned_bytes_t b;
@@ -224,24 +225,34 @@ static bool start() {
   return ok;
 }
 
-// `zenoh blast <sec> <bytes>`: publish seq-numbered payloads as fast as zenoh-pico takes them.
-static void runBlast(uint32_t secs, uint32_t bytes) {
+// `zenoh blast <sec> <bytes> [batch]`: publish seq-numbered payloads as fast as zenoh-pico takes them.
+// Unbatched, every put is its own UDP datagram and costs ~1 ms on the sender (that, not the
+// receiver, held bulk near 1000 msg/s). `batch` wraps the run in zp_batch_start/stop, so puts
+// are packed into a datagram until it is full. The report gives the mean time per put call.
+static void runBlast(uint32_t secs, uint32_t bytes, bool batch) {
   static uint8_t buf[1024];
   bytes = bytes < 8 ? 8 : bytes > sizeof(buf) ? sizeof(buf) : bytes;
   memset(buf, 0xC3, sizeof(buf));
   uint32_t n = 0, failed = 0;
+  int64_t inPut = 0;
+  if (batch) zp_batch_start(z_session_loan(&sSession));
   const int64_t t0 = esp_timer_get_time(), tEnd = t0 + (int64_t)secs * 1000000;
   while (esp_timer_get_time() < tEnd) {
     memcpy(buf, &n, 4);
     z_owned_bytes_t b;
     z_bytes_copy_from_buf(&b, buf, bytes);
-    if (z_publisher_put(z_publisher_loan(&sBulk), z_bytes_move(&b), NULL) == 0) n++;
+    const int64_t tp = esp_timer_get_time();
+    const bool ok = z_publisher_put(z_publisher_loan(&sBulk), z_bytes_move(&b), NULL) == 0;
+    inPut += esp_timer_get_time() - tp;
+    if (ok) n++;
     else { failed++; vTaskDelay(1); }
     if ((n & 15) == 0) taskYIELD();
   }
+  if (batch) zp_batch_stop(z_session_loan(&sSession));   // flushes what is left
   const double s = (esp_timer_get_time() - t0) / 1e6;
-  Con.printf("zblast: %lu x %lu B in %.2f s = %.2f Mbit/s payload, %.0f msg/s, %lu failed\n", (unsigned long)n,
-             (unsigned long)bytes, s, n * bytes * 8 / s / 1e6, n / s, (unsigned long)failed);
+  Con.printf("zblast: %lu x %lu B in %.2f s = %.2f Mbit/s payload, %.0f msg/s, %lu failed, %s, put %.0f us\n",
+             (unsigned long)n, (unsigned long)bytes, s, n * bytes * 8 / s / 1e6, n / s, (unsigned long)failed,
+             batch ? "batched" : "unbatched", n + failed ? (double)inPut / (n + failed) : 0.0);
 }
 
 void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
@@ -270,7 +281,7 @@ void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
   if (sBlastSecs) {
     const uint32_t s = sBlastSecs, by = sBlastBytes;
     sBlastSecs = 0;
-    runBlast(s, by);
+    runBlast(s, by, sBlastBatch);
   }
   // paused: bulk tests still run (above), nothing periodic and no echoes compete with them
   if (sPaused) { sEchoTail = sEchoHead; return; }
@@ -332,8 +343,8 @@ void zenohT1sPrintStatus() {
 
 // zenoh [status] | ping <hz> | rtts [reset] | blast <sec> <bytes> | sink [reset]
 void zenohT1sCommand(const char *args) {
-  char a[16] = {}, b[16] = {}, c[16] = {};
-  const int n = sscanf(args ? args : "", "%15s %15s %15s", a, b, c);
+  char a[16] = {}, b[16] = {}, c[16] = {}, d[16] = {};
+  const int n = sscanf(args ? args : "", "%15s %15s %15s %15s", a, b, c, d);
   if (n < 1 || !strcmp(a, "status")) { zenohT1sPrintStatus(); return; }
   if (!strcmp(a, "pause") || !strcmp(a, "resume")) {
     sPaused = !strcmp(a, "pause");
@@ -360,8 +371,10 @@ void zenohT1sCommand(const char *args) {
   } else if (!strcmp(a, "blast") && n >= 2) {
     if (!sUp) { Con.println("zblast: no session"); return; }
     sBlastBytes = n >= 3 ? atoi(c) : 256;
+    sBlastBatch = n >= 4 && !strcmp(d, "batch");
     sBlastSecs = constrain(atoi(b), 1, 120);
-    Con.printf("zblast: queued %lu s x %lu B\n", (unsigned long)sBlastSecs, (unsigned long)sBlastBytes);
+    Con.printf("zblast: queued %lu s x %lu B%s\n", (unsigned long)sBlastSecs, (unsigned long)sBlastBytes,
+               sBlastBatch ? ", batched" : "");
   } else if (!strcmp(a, "sink")) {
     const BulkRx r = sBulkRx;
     const double s = r.msgs > 1 ? (r.t1 - r.t0) / 1e6 : 0;
@@ -372,7 +385,7 @@ void zenohT1sCommand(const char *args) {
                (unsigned long)expect, (long)expect - (long)r.msgs);
     if (n >= 2 && !strcmp(b, "reset")) { sBulkReset = true; Con.println("zsink: reset"); }
   } else {
-    Con.println("zenoh [status] | pause | resume | ping <hz> | rtts [reset] | blast <sec> <bytes> | sink [reset]");
+    Con.println("zenoh [status] | pause | resume | ping <hz> | rtts [reset] | blast <sec> <bytes> [batch] | sink [reset]");
   }
 }
 
