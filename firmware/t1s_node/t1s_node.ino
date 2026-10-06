@@ -843,6 +843,45 @@ static void tsuFreq(double ppb) {             // increment = 40 ns x (1 + ppb e-
   esp_eth_mac_lan865x_write_reg(gMac, 1, 0x77, ti);
 }
 
+// ---------------------------------------------------------------- PPS (`ptp pps`)
+// A 1 Hz pulse from event generator 0 on DIOA0, edges on whole seconds of the LAN8651 wall clock:
+// two nodes' PPS on a scope give the time-sync error directly (DS60001734F 4.5.4.1; MMS 10:
+// EG0STNS 0x222, EG0STSECL 0x223, EG0STSECH 0x224, EG0PW 0x225, EG0IT 0x226, EG0CTL 0x227,
+// PADCTRL 0x88 A0SEL = 01). DIOA0 becomes an OUTPUT: on a board that ties DIOA0 to ground -- Rev C
+// of this HAT does -- that drives the pin into a short. Hence `force`.
+static void cmdPps(const char *rest) {
+  char w1[8] = "", w2[8] = "";
+  sscanf(rest, "%*s %7s %7s", w1, w2);
+  if (!gMac) { Con.println("pps: no LAN8651"); return; }
+  uint32_t pad = 0;
+  esp_eth_mac_lan865x_read_reg(gMac, 10, 0x88, &pad);
+  if (!strcmp(w1, "off")) {
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x227, 1u << 1);            // STOP
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x88, pad & ~3u);           // DIOA0 back to input (event capture)
+    Con.println("pps: off, DIOA0 input again");
+    return;
+  }
+  if (strcmp(w1, "on") || strcmp(w2, "force")) {
+    Con.println("pps: `ptp pps on force` drives DIOA0 as an output -- only on a board where DIOA0 is NOT tied to"
+                " ground (this HAT's Rev C ties it). `ptp pps off` to stop.");
+    return;
+  }
+  const int64_t now = tsuNow();
+  const uint64_t start = (uint64_t)(now / 1000000000LL) + 2;              // a whole second, 1-2 s ahead
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x227, 1u << 1);              // stop anything running
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x222, 0);                    // start: ns
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x223, (uint32_t)start);      // seconds low
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x224, (uint32_t)(start >> 32) & 0xFFFF);
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x225, 100000000);            // 100 ms high
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x226, 900000000);            // 900 ms low: period 1 s
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x88, (pad & ~3u) | 1u);       // A0SEL = event generator 0
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x227, (1u << 3) | (1u << 2) | 1u);   // REP | AH | START, absolute
+  uint32_t ctl = 0;
+  esp_eth_mac_lan865x_read_reg(gMac, 10, 0x227, &ctl);
+  Con.printf("pps: DIOA0 rising on every whole second of the LAN8651 clock from %llu s (EG0CTL 0x%08lx)\n",
+             (unsigned long long)start, (unsigned long)ctl);
+}
+
 static void lockTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in to = {};
@@ -1263,6 +1302,7 @@ static void help() {
       "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange): offset, delay; + hardware if the peer runs ptp on\n"
       "ptp [on|off]               LAN8651 hardware frame stamps (TSU wall clock) for the sync exchange\n"
       "ptp lock <ip> [sec] [kp] [ki] | stop  discipline the LAN8651 clock to <ip>'s (PI, 1 s updates)\n"
+      "ptp pps on force | off     1 Hz on DIOA0 from the LAN8651 clock (NOT on boards that ground DIOA0)\n"
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
@@ -1391,6 +1431,7 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "sync")) cmdSync(rest);
   else if (!strcmp(cmd, "ptp") && !strcmp(a, "lock")) cmdPtpLock(rest);
   else if (!strcmp(cmd, "ptp") && !strcmp(a, "stop")) gLockRun = false;
+  else if (!strcmp(cmd, "ptp") && !strcmp(a, "pps")) cmdPps(rest);
   else if (!strcmp(cmd, "ptp")) cmdPtp(a);
   else if (!strcmp(cmd, "rtt") && n >= 1) {
     int cnt = 100, size = 64, iv = 5;

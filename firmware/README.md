@@ -344,6 +344,11 @@ Mean offset −0.3 … −1 µs, frequency −20.8 … −21.0 ppm ± 2.5–3 pp
 software stamps and the converter; two LAN8651 nodes (hardware on both ends) are the next step,
 and the servo already uses a master's hardware follow-up when it gets one.
 
+**PPS (`ptp pps on force` / `off`, not yet run on hardware).** Event generator 0 drives DIOA0 high for
+100 ms at every whole second of the LAN8651 clock, so two locked nodes' pulses on a scope show the
+sync error directly. DIOA0 becomes an output: **never on a board that ties DIOA0 to ground** -- Rev C
+of this HAT does (they were unused when it was drawn), hence the `force`.
+
 **Throughput cost.** `-DLAN865X_FRAME_TIMESTAMPS` adds an 8-byte stamp to every received frame on
 SPI: onto T1S (1472 B, 9.5 offered) 8.75 → 8.20 Mbit/s (−6 %); transmit unchanged. Hence a build
 option, not the default. The W5500 interrupt costs nothing (8.76 polled, 8.75 interrupt) and lifts
