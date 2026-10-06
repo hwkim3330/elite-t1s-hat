@@ -628,6 +628,58 @@ static void cmdCtl(const char *rest) {
   xTaskCreatePinnedToCore(ctlTask, "ctl", 6144, nullptr, 5, &gCtlTask, 1);
 }
 
+// ---------------------------------------------------------------- body events (`evt`)
+// Sporadic event messages next to the periodic control stream, the way a body domain mixes them:
+// the wheel's paddles become turn signals. `evt <ip> <code>` sends 12 B to the peer's UDP 5006;
+// the receiver acts on it (the board LED shows the indicator) and answers with the same bytes,
+// so the sender times event -> acknowledged. Codes: 0 off, 1 left, 2 right, 3 hazard.
+struct EvtMsg { uint32_t magic, seq, tUs; };
+static constexpr uint32_t kEvtMagic = 0x45565431;   // "EVT1" + code in the low byte
+static volatile uint8_t gIndicator = 0;
+static const char *evtName(uint8_t c) { return c == 1 ? "left" : c == 2 ? "right" : c == 3 ? "hazard" : "off"; }
+
+static void evtTask(void *) {
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in a = {};
+  a.sin_family = AF_INET;
+  a.sin_port = htons(5006);
+  a.sin_addr.s_addr = htonl(INADDR_ANY);
+  bind(s, (sockaddr *)&a, sizeof(a));
+  EvtMsg m;
+  for (;;) {
+    sockaddr_in from = {};
+    socklen_t fl = sizeof(from);
+    if (recvfrom(s, &m, sizeof(m), 0, (sockaddr *)&from, &fl) != (int)sizeof(m)) continue;
+    if ((m.magic & 0xFFFFFF00u) != (kEvtMagic & 0xFFFFFF00u)) continue;
+    sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);   // ack first, then act
+    gIndicator = m.magic & 0xFF;
+    Con.printf("evt: indicator %s (from " IPSTR ", seq %lu)\n", evtName(gIndicator),
+               IP2STR((esp_ip4_addr_t *)&from.sin_addr.s_addr), (unsigned long)m.seq);
+  }
+}
+
+static void cmdEvt(const char *rest) {
+  char host[16] = "";
+  unsigned code = 0;
+  if (sscanf(rest, "%15s %u", host, &code) < 2) { Con.println("evt <ip> <0 off|1 left|2 right|3 hazard>"); return; }
+  static uint32_t seq = 0;
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(5006);
+  if (!inet_aton(host, &to.sin_addr)) { Con.println("evt: bad address"); close(s); return; }
+  timeval tv = {0, 50000};
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  EvtMsg m = {kEvtMagic & 0xFFFFFF00u | (code & 0xFF), ++seq, (uint32_t)esp_timer_get_time()}, in;
+  sendto(s, &m, sizeof(m), 0, (sockaddr *)&to, sizeof(to));
+  long rtt = -1;
+  while (recv(s, &in, sizeof(in), 0) == (int)sizeof(in))
+    if (in.seq == m.seq) { rtt = (long)((uint32_t)esp_timer_get_time() - m.tUs); break; }
+  close(s);
+  if (rtt >= 0) Con.printf("evt: %s seq %lu acked in %ld us\n", evtName(code), (unsigned long)m.seq, rtt);
+  else Con.printf("evt: %s seq %lu no ack within 50 ms\n", evtName(code), (unsigned long)m.seq);
+}
+
 static void cmdRtt(const char *host, int count, int size, int intervalMs) {
   count = constrain(count, 1, 1000);
   size = constrain(size, 12, 1472);
@@ -855,6 +907,7 @@ static void help() {
       "rtt <ip> [n] [bytes] [ms]  UDP echo round trip in us (default 100 x 64 B, 5 ms apart)\n"
       "w <steer> <y> <z> <rz> [btn]  latest operator input (the PC's wheel feed; silent)\n"
       "ctl <ip> [ms] [sec] [dl ms]  16 B control messages to <ip>'s echo: every ms, or 0 = on change\n"
+      "evt <ip> <code>            body event to <ip> (0 off, 1 left, 2 right, 3 hazard), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
@@ -978,6 +1031,7 @@ static void handleLine(char *line) {
   } else if (!strcmp(cmd, "ping") && n >= 1) cmdPing(a, n >= 2 ? atoi(b) : 5);
   else if (!strcmp(cmd, "w")) cmdWheel(rest);
   else if (!strcmp(cmd, "ctl")) cmdCtl(rest);
+  else if (!strcmp(cmd, "evt")) cmdEvt(rest);
   else if (!strcmp(cmd, "rtt") && n >= 1) {
     int cnt = 100, size = 64, iv = 5;
     sscanf(rest, "%*s %d %d %d", &cnt, &size, &iv);
@@ -1049,6 +1103,7 @@ void setup() {
     else {
       xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
       xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
+    xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
       // Zenoh peer on the W5500 too, named after the chip: t1s-eth-<last 2 MAC bytes>
       static char zname[24];
       uint8_t m[6];
@@ -1069,6 +1124,7 @@ void setup() {
     }
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
+    xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
     zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
@@ -1114,6 +1170,10 @@ void loop() {
   }
   bool on;
   if (gIdentifyUntil && (int32_t)(millis() - gIdentifyUntil) < 0) on = (millis() / 60) & 1;  // ~8 Hz strobe
+  // turn signal from `evt`: left = 1.5 Hz, right = 1.5 Hz with a double flash, hazard = 3 Hz
+  else if (gIndicator == 1) on = (millis() % 667) < 333;
+  else if (gIndicator == 2) on = (millis() % 667) < 90 || ((millis() % 667) > 180 && (millis() % 667) < 270);
+  else if (gIndicator == 3) on = (millis() % 333) < 166;
   else if (!gLinkUp) on = (millis() / 500) & 1;
   else if (plcaOn) on = pst || ((millis() / 125) & 1);
   else on = true;
