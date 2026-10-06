@@ -71,6 +71,7 @@ static esp_eth_mac_t *gMac = nullptr;
 static esp_netif_t *gNetif = nullptr;
 static volatile bool gLinkUp = false;
 static uint8_t gSpiMhzRunning = 0;   // the clock bring-up actually settled on
+static float gSpiActualMhz = 0;      // what the SPI peripheral really runs: 80 MHz / an integer divider
 static volatile uint32_t gEchoCount = 0;
 // port 9 (discard) sink: what a peer's `blast` actually delivered here
 static volatile uint32_t gSinkPackets = 0;
@@ -266,7 +267,16 @@ static bool t1sStart(bool withNetif) {
     // reads DEVID and refuses anything but 0x8650/0x8651. ESP_ERR_TIMEOUT or ESP_ERR_INVALID_CRC
     // means SPI did not reach the chip at this clock: check the riser and CS on IO0.
     Con.printf("t1s: driver install at %u MHz: %s\n", mhz, esp_err_to_name(err));
-    if (err == ESP_OK) { gSpiMhzRunning = mhz; break; }
+    if (err == ESP_OK) {
+      gSpiMhzRunning = mhz;
+      // 25 asked gives 80/3 = 26.67, 22 and 20 both give 20, 18 and 15 both give 16, 12 gives 11.43
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+      gSpiActualMhz = spi_get_actual_clock(80 * 1000 * 1000, mhz * 1000 * 1000, 128) / 1e6f;
+#pragma GCC diagnostic pop
+      Con.printf("t1s: SPI %u MHz asked, %.2f MHz actual\n", mhz, gSpiActualMhz);
+      break;
+    }
     gMac->del(gMac);
     phy->del(phy);
     gMac = nullptr;
@@ -343,16 +353,20 @@ static void echoTask(void *) {
 // out before its next packet, so the console never races it.
 struct SinkSeq {
   uint32_t minSeq = UINT32_MAX, maxSeq = 0, last = 0, reordered = 0, dup = 0;
-  int64_t tPrev = 0, gapMax = 0;
-  uint32_t gapHist[101] = {};  // inter-arrival gaps, 20 us buckets; [100] = 2 ms and more
+  int64_t tPrev = 0, gapMax = 0, t0us = 0, t1us = 0;
+  uint64_t bytesAfterFirst = 0;  // the rate is (everything after the first datagram) / (first..last)
+  // inter-arrival gaps: [0..99] 20 us bins up to 2 ms, [100..147] 1 ms bins up to 50 ms, [148] beyond
+  uint32_t gapHist[149] = {};
+  static int gapBin(int64_t g) { return g < 2000 ? (int)(g / 20) : g < 50000 ? 100 + (int)((g - 2000) / 1000) : 148; }
+  static uint32_t binMid(int i) { return i < 100 ? i * 20 + 10 : i < 148 ? 2000 + (i - 100) * 1000 + 500 : 50000; }
   // a member, not a free function: Arduino's prototype pass would declare it before this struct
   uint32_t gapPct(uint32_t total, float p) const {
     uint32_t acc = 0, want = (uint32_t)(total * p);
-    for (int i = 0; i <= 100; i++) {
+    for (int i = 0; i < 149; i++) {
       acc += gapHist[i];
-      if (acc > want) return i * 20 + 10;
+      if (acc > want) return binMid(i);
     }
-    return 2000;
+    return 50000;
   }
 };
 static SinkSeq gSeq;
@@ -378,8 +392,10 @@ static void sinkTask(void *) {
       gSinkResetReq = false;
     }
     const uint32_t now = millis();
-    if (gSinkPackets == 0) gSinkT0 = now;
+    if (gSinkPackets == 0) { gSinkT0 = now; gSeq.t0us = tus; }
+    else gSeq.bytesAfterFirst += n;
     gSinkLast = now;
+    gSeq.t1us = tus;
     gSinkPackets = gSinkPackets + 1;
     gSinkBytes = gSinkBytes + n;
     // blast puts a sequence number in the first 4 bytes (little endian)
@@ -398,7 +414,7 @@ static void sinkTask(void *) {
     }
     if (gSeq.tPrev) {
       const int64_t g = tus - gSeq.tPrev;
-      gSeq.gapHist[g >= 2000 ? 100 : g / 20]++;
+      gSeq.gapHist[SinkSeq::gapBin(g)]++;
       if (g > gSeq.gapMax) gSeq.gapMax = g;
     }
     gSeq.tPrev = tus;
@@ -408,20 +424,23 @@ static void sinkTask(void *) {
 static void cmdSink(bool reset) {
   const uint32_t pk = gSinkPackets;
   const uint64_t by = gSinkBytes;
-  const float secs = pk > 1 ? (gSinkLast - gSinkT0) / 1000.0f : 0.0f;
-  // same accounting as blast: payload + 42 B of Ethernet/IP/UDP headers per datagram
-  const float mbit = secs > 0 ? (by + 42.0f * pk) * 8 / secs / 1e6f : 0.0f;
-  Con.printf("sink: %lu packets, %llu B in %.1f s = %.2f Mbit/s on the wire\n",
-                (unsigned long)pk, (unsigned long long)by, secs, mbit);
   const SinkSeq q = gSeq;
+  // n datagrams arrive over n-1 intervals: count the n-1 that arrived after the first, over the
+  // first-to-last span (us). Counting all n over that span read ~0.5 % high at 1472 B.
+  const double secs = pk > 1 ? (q.t1us - q.t0us) / 1e6 : 0.0;
+  // same accounting as blast: payload + 42 B of Ethernet/IP/UDP headers per datagram
+  const double mbit = secs > 0 ? (q.bytesAfterFirst + 42.0 * (pk - 1)) * 8 / secs / 1e6 : 0.0;
+  Con.printf("sink: %lu packets, %llu B in %.3f s = %.3f Mbit/s on the wire\n",
+                (unsigned long)pk, (unsigned long long)by, secs, mbit);
   if (pk && q.maxSeq >= q.minSeq) {
     const uint32_t expect = q.maxSeq - q.minSeq + 1, gaps = pk > 1 ? pk - 1 : 0;
     Con.printf("sinkx: seq %lu..%lu expected %lu got %lu lost %ld reordered %lu dup %lu "
                "gap_us p50 %lu p90 %lu p99 %lu max %lld\n",
                (unsigned long)q.minSeq, (unsigned long)q.maxSeq, (unsigned long)expect, (unsigned long)pk,
                (long)expect - (long)pk + (long)q.dup, (unsigned long)q.reordered, (unsigned long)q.dup,
-               (unsigned long)q.gapPct(gaps, 0.5f), (unsigned long)q.gapPct(gaps, 0.9f),
-               (unsigned long)q.gapPct(gaps, 0.99f), (long long)q.gapMax);
+               (unsigned long)min<int64_t>(q.gapPct(gaps, 0.5f), q.gapMax),
+               (unsigned long)min<int64_t>(q.gapPct(gaps, 0.9f), q.gapMax),
+               (unsigned long)min<int64_t>(q.gapPct(gaps, 0.99f), q.gapMax), (long long)q.gapMax);
   }
   if (reset) { gSinkResetReq = true; gSinkPackets = 0; gSinkBytes = 0; Con.println("sink: counters reset"); }
 }
@@ -609,8 +628,8 @@ static void cmdStatus() {
                               : gCfg.mode == kModeSniff ? "sniff (T1S -> W5500 only, PLCA off, never transmits)"
                               : gCfg.mode == kModeTx    ? "tx (W5500 endpoint, no LAN8651)"
                                                         : "node");
-  Con.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz  echo %lu\n", gLinkUp ? "up" : "down",
-                IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
+  Con.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz (%.2f actual)  echo %lu\n", gLinkUp ? "up" : "down",
+                IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, gSpiActualMhz, (unsigned long)gEchoCount);
   if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) { bridge::printStats(); bridge::printPhy(); }
   else cmdSink(false);
   if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); bridge::printW5500Rx(); }

@@ -153,6 +153,11 @@ save / reboot
 Settings live in NVS (`t1s` namespace). A fresh board comes up with **PLCA off
 (CSMA/CD), 192.168.50.9, SPI at 25 MHz**.
 
+**Asked vs actual SPI clock.** The ESP32-S3's SPI peripheral divides 80 MHz by an integer, so `spi 25` runs at
+**26.67 MHz**, `spi 22` and `spi 20` at 20, `spi 18` and `spi 15` at 16, `spi 12` at 11.43 (read from the board,
+2026-10-06). Bring-up prints both (`t1s: SPI 25 MHz asked, 26.67 MHz actual`) and `status` shows the actual
+one. Every "25 MHz" result in these docs and the reports was measured at 26.67 MHz.
+
 **SPI clock fallback.** Bring-up tries the saved clock, then 20, 12 and 4 MHz, and keeps the
 first one the driver installs at (the driver checks parity on every control reply, so a clock
 the wiring can't carry fails install instead of corrupting data). The boot log prints each
