@@ -723,7 +723,7 @@ static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
   gPtpAnyRts = gPtpAnyRts + 1;
   uint16_t sp, dp;
   const uint8_t *p = udpOf(f, len, sp, dp);
-  if (!p || dp != 5007) return;
+  if (!p || (dp != 5007 && sp != 5007)) return;
   uint32_t magic, seq;
   memcpy(&magic, p, 4);
   memcpy(&seq, p + 4, 4);
@@ -735,7 +735,7 @@ static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
 static bool wantTxStamp(const uint8_t *f, uint32_t len) {
   uint16_t sp, dp;
   const uint8_t *p = udpOf(f, len, sp, dp);
-  if (!p || sp != 5007) return false;
+  if (!p || (sp != 5007 && dp != 5007)) return false;
   uint32_t magic;
   memcpy(&magic, p, 4);
   if (magic != kSyncMagic) return false;   // the reply, not the follow-up
@@ -792,6 +792,116 @@ static int64_t takeTxStamp() {
   }
   gPtpTxMiss = gPtpTxMiss + 1;
   return -1;
+}
+
+// ---------------------------------------------------------------- clock servo (`ptp lock`)
+// The node disciplines its LAN8651 wall clock to a master's clock, the way ptp4l steers a PHC:
+// it asks the master (UDP 5007, the `sync` exchange) 16 times a second, stamping its own request
+// and the reply in hardware (t1, t4, ns) against the master's t2/t3 (us); every second it takes the
+// exchange with the smallest delay, steps once, then runs a PI loop on the TSU frequency
+// (TI + TISUBN: 40 ns per 25 MHz tick in 2^-24 ns units). Offset printed = master - node, ns.
+static volatile bool gLockRun = false;
+static char gLockHost[16];
+static int gLockSecs = 60;
+static float gLockKp = 0.2f, gLockKi = 0.02f;   // measured best on this bench (W5500 master): see README
+
+static int64_t tsuNow() {                     // TN first, then TSL (the order the datasheet latches)
+  uint32_t ns = 0, sl = 0;
+  esp_eth_mac_lan865x_read_reg(gMac, 1, 0x75, &ns);
+  esp_eth_mac_lan865x_read_reg(gMac, 1, 0x74, &sl);
+  return (int64_t)sl * 1000000000LL + ns;
+}
+static void tsuStep(int64_t d) {              // add d ns: TA below 1 s, else set seconds/ns directly
+  if (d > -1000000000LL && d < 1000000000LL) {
+    const uint32_t v = (d < 0 ? 0x80000000u : 0) | (uint32_t)((d < 0 ? -d : d) & 0x3FFFFFFF);
+    esp_eth_mac_lan865x_write_reg(gMac, 1, 0x76, v);
+  } else {
+    const int64_t t = tsuNow() + d;
+    esp_eth_mac_lan865x_write_reg(gMac, 1, 0x75, (uint32_t)(t % 1000000000LL));
+    esp_eth_mac_lan865x_write_reg(gMac, 1, 0x74, (uint32_t)(t / 1000000000LL));
+  }
+}
+static void tsuFreq(double ppb) {             // increment = 40 ns x (1 + ppb e-9), 2^-24 ns resolution
+  const uint64_t inc = (uint64_t)llround(40.0 * 16777216.0 * (1.0 + ppb * 1e-9));
+  const uint32_t ti = (uint32_t)(inc >> 24), sub = (uint32_t)(inc & 0xFFFFFF);
+  esp_eth_mac_lan865x_write_reg(gMac, 1, 0x6F, ((sub & 0xFF) << 24) | ((sub >> 8) & 0xFFFF));   // TISUBN first
+  esp_eth_mac_lan865x_write_reg(gMac, 1, 0x77, ti);
+}
+
+static void lockTask(void *) {
+  int s = socket(AF_INET, SOCK_DGRAM, 0);
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(5007);
+  inet_aton(gLockHost, &to.sin_addr);
+  timeval tv = {0, 30000};
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  const double kp = gLockKp, ki = gLockKi;    // ppb per ns, per 1 s update; ptp4l's defaults are 0.7 / 0.3
+  double integ = 0, freq = 0;
+  bool stepped = false;
+  uint32_t seq = 0x40000000u;
+  tsuFreq(0);
+  Con.printf("ptpl: locking the LAN8651 clock to %s for %d s (kp %.1f ki %.1f)\n", gLockHost, gLockSecs, kp, ki);
+  for (int sec = 0; sec < gLockSecs && gLockRun; sec++) {
+    int64_t bestOff = 0, bestDly = INT64_MAX;
+    int ok = 0;
+    for (int k = 0; k < 16; k++) {
+      SyncMsg m = {kSyncMagic, ++seq, esp_timer_get_time(), 0, 0}, in;
+      sendto(s, &m, sizeof(m), 0, (sockaddr *)&to, sizeof(to));
+      const int64_t t1 = takeTxStamp();      // our request's egress, hardware
+      bool got = false;
+      while (recv(s, &in, sizeof(in), 0) == (int)sizeof(in)) {
+        if (in.magic == kSyncMagic && in.seq == m.seq) { got = true; break; }
+      }
+      const HwStamp r = gRxStamp[m.seq & 63];
+      if (got && t1 >= 0 && r.seq == m.seq) {
+        const int64_t t4 = r.ns, t2 = in.t2 * 1000, t3 = in.t3 * 1000;
+        const int64_t off = ((t2 - t1) + (t3 - t4)) / 2, dly = ((t4 - t1) - (t3 - t2)) / 2;
+        if (dly < bestDly) { bestDly = dly; bestOff = off; }
+        ok++;
+      }
+      // spread the requests over the far side's 1 ms W5500 receive poll: a fixed whole-ms spacing
+      // keeps every request at the same poll phase, and then the min-delay pick has nothing to pick
+      delayMicroseconds(esp_random() % 1000);
+      delay(54);
+    }
+    if (!ok) { Con.printf("ptpl: %d s no answers\n", sec); continue; }
+    if (!stepped) {                           // first second: jump to the master's time
+      tsuStep(bestOff);
+      stepped = true;
+      Con.printf("ptpl: %d step %lld ns\n", sec, (long long)bestOff);
+      continue;
+    }
+    integ += ki * bestOff;
+    freq = kp * bestOff + integ;              // ppb, positive = node runs slow -> speed up
+    if (freq > 200000) freq = 200000;
+    if (freq < -200000) freq = -200000;
+    tsuFreq(freq);
+    Con.printf("ptpl: %d offset %lld ns delay %lld ns freq %+.0f ppb (%d/16)\n", sec, (long long)bestOff,
+               (long long)bestDly, freq, ok);
+  }
+  close(s);
+  Con.printf("ptpl: done, holding %+.0f ppb\n", freq);
+  gLockRun = false;
+  vTaskDelete(nullptr);
+}
+
+static void cmdPtpLock(const char *rest) {
+  char host[16] = "";
+  int secs = 60;
+  float kp = 0.2f, ki = 0.02f;
+  if (sscanf(rest, "%*s %15s %d %f %f", host, &secs, &kp, &ki) < 1) {
+    Con.println("ptp lock <master ip> [sec] [kp] [ki] | ptp stop");
+    return;
+  }
+  gLockKp = kp;
+  gLockKi = ki;
+  if (!gPtpOn) { Con.println("ptpl: run `ptp on` first"); return; }
+  if (gLockRun) { Con.println("ptpl: already running"); return; }
+  strncpy(gLockHost, host, sizeof(gLockHost));
+  gLockSecs = constrain(secs, 3, 3600);
+  gLockRun = true;
+  xTaskCreatePinnedToCore(lockTask, "ptp_lock", 6144, nullptr, 5, nullptr, 1);
 }
 
 static void syncTask(void *) {
@@ -1121,6 +1231,7 @@ static void help() {
       "ctl <ip> [ms] [sec] [dl ms]  16 B control messages to <ip>'s echo: every ms, or 0 = on change\n"
       "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange): offset, delay; + hardware if the peer runs ptp on\n"
       "ptp [on|off]               LAN8651 hardware frame stamps (TSU wall clock) for the sync exchange\n"
+      "ptp lock <ip> [sec] [kp] [ki] | stop  discipline the LAN8651 clock to <ip>'s (PI, 1 s updates)\n"
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
@@ -1247,6 +1358,8 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "ctl")) cmdCtl(rest);
   else if (!strcmp(cmd, "evt")) cmdEvt(rest);
   else if (!strcmp(cmd, "sync")) cmdSync(rest);
+  else if (!strcmp(cmd, "ptp") && !strcmp(a, "lock")) cmdPtpLock(rest);
+  else if (!strcmp(cmd, "ptp") && !strcmp(a, "stop")) gLockRun = false;
   else if (!strcmp(cmd, "ptp")) cmdPtp(a);
   else if (!strcmp(cmd, "rtt") && n >= 1) {
     int cnt = 100, size = 64, iv = 5;

@@ -320,6 +320,18 @@ both sides 43 µs), lowest-delay 10 % 31 µs; the TSU runs off the HAT's 25 MHz 
 the ESP32's. The far side is the limit here (W5500 poll, converter, PLCA wait): hardware-to-hardware
 needs a second LAN8651 node.
 
+**Clock servo (`ptp lock <ip> [sec] [kp] [ki]`).** The node disciplines its LAN8651 clock to a
+master's, as ptp4l steers a PHC: 16 exchanges a second with its own request and the reply stamped
+in hardware, the min-delay one per second, one step (TA register below 1 s, else TSL/TN), then a PI
+loop on the TSU frequency -- TI (ns) plus TISUBN (2^-24 ns; its 24 bits are split: low byte in
+31:24, high 16 bits in 15:0; write TISUBN before TI). The request spacing is jittered by 0–1 ms:
+at a whole-ms spacing every request meets the master's 1 ms W5500 poll at the same phase and the
+min-delay pick has nothing to choose from. Against ESP-B (software stamps, W5500) on 2026-10-06:
+offset after 20 s **mean −3.4 µs, σ 32 µs** (max 130), frequency held at **−22.3 ppm** (the HAT's
+25 MHz crystal against the ESP32's); ptp4l's gains (0.7 / 0.3) amplify this bench's ~50 µs
+measurement noise into ±40 ppm swings, 0.2 / 0.02 is the default. A master with hardware stamps
+(a second LAN8651) removes most of that noise.
+
 ### Flashing after an OTA
 
 An OTA writes the *other* app slot and points `otadata` at it. A later USB flash of the app at
