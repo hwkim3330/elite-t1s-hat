@@ -254,6 +254,10 @@ arduino-cli compile --fqbn "$FQBN" --library <path>/zenoh-pico \
 boards form a Zenoh network on their own. (`#iface=` is required by zenoh-pico's multicast locator
 check; the ESP32 port ignores its value and lwIP sends from the default netif, the wired one.)
 
+**Wireshark.** [`tools/zenoh.lua`](../tools/zenoh.lua) decodes it: copy it to `~/.local/lib/wireshark/plugins/`
+(or `tshark -X lua_script:tools/zenoh.lua`). UDP 7447 then shows `JOIN peer <zid>`, `PUT t1s/t1s-hat-0/signal '23.69'`,
+DECLAREs, and a tree down to the key expression and payload; written against zenoh-pico 1.10.1's codec.
+
 **TTL 1.** 224.0.0.0/24 is link-local (RFC 3171/5771) and must be sent with TTL 1; lwIP's default is 64,
 which Wireshark colours red on every Zenoh datagram ("TTL low or unexpected"). zenoh-pico sets no
 multicast TTL, so the vendored copy is patched: [`zenoh-pico-multicast-ttl1.patch`](zenoh-pico-multicast-ttl1.patch)
