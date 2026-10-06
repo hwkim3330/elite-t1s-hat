@@ -423,7 +423,7 @@ Considered and **not** done, on purpose:
 - **Separate 1 mm test pads.** J1's pads are labelled probe points with GND beside
   them; adding stubs to the SPI lines buys little.
 
-Measured with a LAN8651 HAT on this firmware (2026-10-01): SPI 25 MHz → 9.0 Mbit/s
+Measured with a LAN8651 HAT on this firmware (2026-10-01): SPI 25 MHz asked (26.67 MHz actual) → 9.0 Mbit/s
 PC → node without loss, 9.5 node → PC, ping 0.85 ms; with PLCA no node-side loss in
 any contention test, where CSMA/CD lost up to 27 %. Full report and the design
 lessons behind Rev C: <https://github.com/hwkim3330/t1s-eval>.
@@ -436,7 +436,7 @@ lessons behind Rev C: <https://github.com/hwkim3330/t1s-eval>.
 4. T1S link up — the Elite's LED goes solid once PLCA beacons are seen
 5. PLCA, node 0 and node 1
 6. Ping
-7. UDP throughput — 9 Mbit/s each way at SPI 25 MHz is what the reference reached
+7. UDP throughput — 9 Mbit/s each way at SPI 25 MHz asked (26.67 actual) is what the reference reached
 8. Zenoh (build with `-DT1S_WITH_ZENOH`)
 9. Scope TRXP/TRXN at the connector
 

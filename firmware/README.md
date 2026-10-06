@@ -217,8 +217,10 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
   from PLCA_STS: solid = beacons seen, fast blink = no beacons, slow blink = no
   link. Rev C boards have no LEDs of their own.
 - **SPI clock:** 25 MHz is now the default, with the automatic step-down above. A LAN8651
-  HAT on this firmware ran clean at 25 MHz: 9.0 Mbit/s to the node and 9.5 from it,
-  against 6.0 / 6.3 at 12 MHz. The step-down itself has not run on hardware.
+  HAT on this firmware ran clean at 25 MHz asked (26.67 actual): 9.0 Mbit/s to the node and
+  9.5 from it, against 6.0 / 6.3 at 12 MHz asked (11.43 actual). The to-node rates were read
+  by the board's sink, which then ran ≈0.5 % high (fixed in cf0ba44); see the
+  [errata](https://github.com/hwkim3330/t1s-eval/blob/main/ERRATA.md). The step-down itself has not run on hardware.
 - **Run on hardware (2026-10-02, three Elite boards):** `mode tx`, the SPI step-down (no HAT:
   25 → 20 → 12 → 4, fails cleanly, console stays up), the WiFi AP + TCP console (a PC joined
   `t1s-9c3c` and ran `status` over `nc`), **OTA** (espota over the AP, 1.17 MB in 14.7 s,
