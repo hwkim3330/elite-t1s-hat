@@ -632,11 +632,15 @@ static void cmdCtl(const char *rest) {
 // Sporadic event messages next to the periodic control stream, the way a body domain mixes them:
 // the wheel's paddles become turn signals. `evt <ip> <code>` sends 12 B to the peer's UDP 5006;
 // the receiver acts on it (the board LED shows the indicator) and answers with the same bytes,
-// so the sender times event -> acknowledged. Codes: 0 off, 1 left, 2 right, 3 hazard.
+// so the sender times event -> acknowledged. Codes: 0 off, 1 left, 2 right, 3 hazard (the
+// indicator state), 4 horn and 5 headlight flash (one-shot LED patterns over whatever runs).
 struct EvtMsg { uint32_t magic, seq, tUs; };
 static constexpr uint32_t kEvtMagic = 0x45565431;   // "EVT1" + code in the low byte
 static volatile uint8_t gIndicator = 0;
-static const char *evtName(uint8_t c) { return c == 1 ? "left" : c == 2 ? "right" : c == 3 ? "hazard" : "off"; }
+static volatile uint32_t gHornUntil = 0, gFlashUntil = 0;
+static const char *evtName(uint8_t c) {
+  return c == 1 ? "left" : c == 2 ? "right" : c == 3 ? "hazard" : c == 4 ? "horn" : c == 5 ? "flash" : "off";
+}
 
 static void evtTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
@@ -652,8 +656,11 @@ static void evtTask(void *) {
     if (recvfrom(s, &m, sizeof(m), 0, (sockaddr *)&from, &fl) != (int)sizeof(m)) continue;
     if ((m.magic & 0xFFFFFF00u) != (kEvtMagic & 0xFFFFFF00u)) continue;
     sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);   // ack first, then act
-    gIndicator = m.magic & 0xFF;
-    Con.printf("evt: indicator %s (from " IPSTR ", seq %lu)\n", evtName(gIndicator),
+    const uint8_t code = m.magic & 0xFF;
+    if (code == 4) gHornUntil = millis() + 600;
+    else if (code == 5) gFlashUntil = millis() + 500;
+    else if (code <= 3) gIndicator = code;
+    Con.printf("evt: %s (from " IPSTR ", seq %lu)\n", evtName(code),
                IP2STR((esp_ip4_addr_t *)&from.sin_addr.s_addr), (unsigned long)m.seq);
   }
 }
@@ -661,7 +668,10 @@ static void evtTask(void *) {
 static void cmdEvt(const char *rest) {
   char host[16] = "";
   unsigned code = 0;
-  if (sscanf(rest, "%15s %u", host, &code) < 2) { Con.println("evt <ip> <0 off|1 left|2 right|3 hazard>"); return; }
+  if (sscanf(rest, "%15s %u", host, &code) < 2 || code > 5) {
+    Con.println("evt <ip> <0 off|1 left|2 right|3 hazard|4 horn|5 flash>");
+    return;
+  }
   static uint32_t seq = 0;
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in to = {};
@@ -907,7 +917,7 @@ static void help() {
       "rtt <ip> [n] [bytes] [ms]  UDP echo round trip in us (default 100 x 64 B, 5 ms apart)\n"
       "w <steer> <y> <z> <rz> [btn]  latest operator input (the PC's wheel feed; silent)\n"
       "ctl <ip> [ms] [sec] [dl ms]  16 B control messages to <ip>'s echo: every ms, or 0 = on change\n"
-      "evt <ip> <code>            body event to <ip> (0 off, 1 left, 2 right, 3 hazard), timed to its ack\n"
+      "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
@@ -1170,6 +1180,9 @@ void loop() {
   }
   bool on;
   if (gIdentifyUntil && (int32_t)(millis() - gIdentifyUntil) < 0) on = (millis() / 60) & 1;  // ~8 Hz strobe
+  // one-shots from `evt` over everything else: horn = 12 Hz strobe 0.6 s, flash = two long blinks
+  else if ((int32_t)(millis() - gHornUntil) < 0) on = (millis() / 40) & 1;
+  else if ((int32_t)(millis() - gFlashUntil) < 0) on = ((gFlashUntil - millis()) / 125) & 1;
   // turn signal from `evt`: left = 1.5 Hz, right = 1.5 Hz with a double flash, hazard = 3 Hz
   else if (gIndicator == 1) on = (millis() % 667) < 333;
   else if (gIndicator == 2) on = (millis() % 667) < 90 || ((millis() % 667) > 180 && (millis() % 667) < 270);
