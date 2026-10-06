@@ -1,0 +1,16 @@
+--- a/src/link/transport/udp/udp_multicast_esp32.c	2026-10-06 12:34:35.560900940 +0900
++++ b/src/link/transport/udp/udp_multicast_esp32.c
+@@ -85,6 +85,13 @@
+             _Z_ERROR_LOG(_Z_ERR_GENERIC);
+             ret = _Z_ERR_GENERIC;
+         }
++        // 224.0.0.0/24 is link-local (RFC 3171 / RFC 5771): senders must use TTL 1. lwIP's default
++        // multicast TTL is 64, which Wireshark flags on every Zenoh scouting/data datagram.
++        u8_t ttl = 1;
++        if ((ret == _Z_RES_OK) && (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl)) < 0)) {
++            _Z_ERROR_LOG(_Z_ERR_GENERIC);
++            ret = _Z_ERR_GENERIC;
++        }
+     } else if (lsockaddr->sa_family == AF_INET6) {
+         unsigned int ifindex = _z_esp32_udp_multicast_ipv6_outbound_ifindex();
+         if (setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_IF, &ifindex, sizeof(ifindex)) < 0) {

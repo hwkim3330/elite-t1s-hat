@@ -66,6 +66,9 @@ struct Config {
   uint8_t spiMhz = kDefaultSpiMhz;
   uint32_t ip = 0;     // 0 = derive from the node ID, see defaultIp()
   uint32_t mask = 0;   // 0 = 255.255.255.0
+  uint8_t lan = 1;     // mode node: also bring up the board's own RJ45 (W5500)
+  uint32_t lanIp = 0;  // 0 = DHCP
+  uint32_t lanMask = 0;
 };
 
 static Config gCfg;
@@ -73,6 +76,8 @@ static Preferences gPrefs;
 static esp_eth_handle_t gEth = nullptr;
 static esp_eth_mac_t *gMac = nullptr;
 static esp_netif_t *gNetif = nullptr;
+static esp_netif_t *gLan = nullptr;   // mode node: the W5500 next to T1S
+static volatile bool gLanUp = false;
 static volatile bool gLinkUp = false;
 static uint8_t gSpiMhzRunning = 0;   // the clock bring-up actually settled on
 static float gSpiActualMhz = 0;      // what the SPI peripheral really runs: 80 MHz / an integer divider
@@ -101,6 +106,9 @@ static void loadConfig() {
   gCfg.spiMhz = gPrefs.getUChar("mhz", gCfg.spiMhz);
   gCfg.ip = gPrefs.getULong("ip", 0);
   gCfg.mask = gPrefs.getULong("mask", 0);
+  gCfg.lan = gPrefs.getUChar("lan", gCfg.lan);
+  gCfg.lanIp = gPrefs.getULong("lanip", 0);
+  gCfg.lanMask = gPrefs.getULong("lanmask", 0);
   gPrefs.end();
 }
 
@@ -112,12 +120,21 @@ static void saveConfig() {
   gPrefs.putUChar("mhz", gCfg.spiMhz);
   gPrefs.putULong("ip", gCfg.ip);
   gPrefs.putULong("mask", gCfg.mask);
+  gPrefs.putUChar("lan", gCfg.lan);
+  gPrefs.putULong("lanip", gCfg.lanIp);
+  gPrefs.putULong("lanmask", gCfg.lanMask);
   gPrefs.end();
 }
 
-static void onEthEvent(void *, esp_event_base_t, int32_t id, void *) {
-  if (id == ETHERNET_EVENT_CONNECTED) { gLinkUp = true; Con.println("t1s: link up"); }
-  if (id == ETHERNET_EVENT_DISCONNECTED) { gLinkUp = false; Con.println("t1s: link down"); }
+// Two Ethernet drivers can run at once (T1S + the board's RJ45), so the event says which one.
+static void onEthEvent(void *, esp_event_base_t, int32_t id, void *data) {
+  const esp_eth_handle_t h = data ? *(esp_eth_handle_t *)data : nullptr;
+  const bool lan = gCfg.mode == kModeNode && h && h == bridge::gNodeTx;
+  const bool up = id == ETHERNET_EVENT_CONNECTED;
+  if (id != ETHERNET_EVENT_CONNECTED && id != ETHERNET_EVENT_DISCONNECTED) return;
+  if (lan) gLanUp = up;
+  else gLinkUp = up;
+  Con.printf("%s: link %s\n", lan ? "lan" : gCfg.mode == kModeTx ? "w5500" : "t1s", up ? "up" : "down");
 }
 
 // ---------------------------------------------------------------- PLCA
@@ -641,7 +658,17 @@ static void cmdStatus() {
   if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) { bridge::printStats(); bridge::printPhy(); }
   else cmdSink(false);
   if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); bridge::printW5500Rx(); }
-  else if (gCfg.mode == kModeNode) bridge::printRx(1, "t1s");
+  else if (gCfg.mode == kModeNode) {
+    bridge::printRx(1, "t1s");
+    if (gLan) {
+      esp_netif_ip_info_t li = {};
+      esp_netif_get_ip_info(gLan, &li);
+      Con.printf("lan: %s  ip " IPSTR "/" IPSTR "%s\n", gLanUp ? "up" : "down", IP2STR(&li.ip), IP2STR(&li.netmask),
+                 gCfg.lanIp ? "" : " (DHCP)");
+      bridge::printPhy();
+      bridge::printRx(0, "lan");
+    } else Con.printf("lan: %s\n", gCfg.lan ? "bring-up FAILED" : "off (`lan dhcp` or `lan <ip>`, save, reboot)");
+  }
   netConsolePrintStatus();
   if (gEth) printPlca();
   // DEVID (misc 0x94) and PADCTRL (misc 0x88): the chip's identity, and how its DIOA pads are
@@ -664,6 +691,7 @@ static void help() {
       "plca <id> [count]          PLCA node id (0 = coordinator) and node count\n"
       "csma                       PLCA off, plain CSMA/CD\n"
       "ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)\n"
+      "lan dhcp|<ip> [mask]|off   (mode node) the board's own RJ45 next to T1S, own subnet (save + reboot)\n"
       "spi <mhz>                  SPI clock, 1..25 (applied on reboot)\n"
       "ping <ip> [n]              ICMP over the T1S bus\n"
       "blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it (0 = flat out)\n"
@@ -769,6 +797,23 @@ static void handleLine(char *line) {
     info.netmask.addr = gCfg.mask;
     if (gNetif) esp_netif_set_ip_info(gNetif, &info);
     cmdStatus();
+  } else if (!strcmp(cmd, "lan") && n >= 1) {
+    IPAddress ip, mask(255, 255, 255, 0);
+    if (!strcmp(a, "off")) gCfg.lan = 0;
+    else if (!strcmp(a, "dhcp")) { gCfg.lan = 1; gCfg.lanIp = 0; }
+    else if (ip.fromString(a) && (n < 2 || mask.fromString(b))) {
+      gCfg.lan = 1;
+      gCfg.lanIp = (uint32_t)ip;
+      gCfg.lanMask = (uint32_t)mask;
+      if (gLan) {   // address applies now; on/off needs a reboot
+        esp_netif_dhcpc_stop(gLan);
+        esp_netif_ip_info_t info = {};
+        info.ip.addr = gCfg.lanIp;
+        info.netmask.addr = gCfg.lanMask;
+        esp_netif_set_ip_info(gLan, &info);
+      }
+    } else { Con.println("lan dhcp | lan <ip> [mask] | lan off"); return; }
+    Con.printf("lan: %s (`save`; on/off after reboot)\n", !gCfg.lan ? "off" : gCfg.lanIp ? a : "dhcp");
   } else if (!strcmp(cmd, "spi") && n >= 1) {
     gCfg.spiMhz = constrain(atoi(a), 1, 25);
     Con.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
@@ -857,6 +902,11 @@ void setup() {
     if (!bridge::start(gEth, gCfg.mode == kModeSniff))
       Con.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
   } else {
+    // The board's own RJ45 as a second interface (before WiFi: it needs internal DMA RAM)
+    if (gCfg.lan) {
+      gLan = bridge::startLan(gCfg.lanIp, gCfg.lanMask ? gCfg.lanMask : (uint32_t)IPAddress(255, 255, 255, 0));
+      if (!gLan) Con.println("lan: W5500 bring-up FAILED -- T1S is unaffected");
+    }
     xTaskCreate(echoTask, "udp_echo", 4096, nullptr, 5, nullptr);
     xTaskCreate(sinkTask, "udp_sink", 4096, nullptr, 5, nullptr);
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)

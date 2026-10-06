@@ -84,10 +84,19 @@ T1S ↔ 100BASE-TX bridge.
 
 | mode | what the board is | IP | status |
 |---|---|---|---|
-| **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast` | yes, 192.168.50.x | **run** |
+| **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast`; the Elite's own RJ45 (W5500) comes up next to it as a second interface, see below | yes, 192.168.50.x (+ LAN: DHCP) | **run** (LAN: driver and PHY up, no cable yet) |
 | **bridge** | a **learning Ethernet bridge** between the Elite's W5500 (100BASE-TX) and the LAN8651 (10BASE-T1S), `bridge.h` | none, managed over USB serial | compiles |
 | **tx** | **no LAN8651:** the Elite's W5500 as an ordinary IP endpoint (echo, sink, `blast`, `ping`), default 192.168.100.66. This is the second board of a two-ESP bench, in the PC's place on the converter's 100BASE-TX port | yes, W5500 | **run** |
 | **sniff** | a **receive-only bus analyser**: every T1S frame is copied out of the W5500 to a capture PC (Wireshark). PLCA is held off, there is no IP, and nothing is sent on T1S, so the bus under test is not disturbed | none | compiles, not run |
+
+**The RJ45 in node mode.** Until 2026-10-06 node mode never started the W5500, so the board's
+own LAN port was dead while the HAT ran -- not an SPI conflict (W5500 on SPI2, LAN8651 on SPI3;
+bridge mode runs both). Now `lan dhcp` (default), `lan <ip> [mask]` or `lan off`, then `save` +
+`reboot`. It is a separate interface on its own subnet, nothing is forwarded to T1S (that is
+bridge mode), and its route priority is below T1S's, so the default route and Zenoh's multicast
+stay on the bus. Echo (7), sink (9), the TCP console (23) and OTA answer on it too. `status`
+prints `lan: up|down ip ...` and the W5500's PHYCFGR. Keep its subnet off T1S's (192.168.100.x on
+the bench). The W5500 has no auto-MDIX: to another W5500 board use a crossover cable.
 
 Sniff is the converter's "ID ≥ 1, count 0" mode on this board. Wire the W5500 port
 straight to the capture PC, not through a switch (the switch would learn the T1S
@@ -244,6 +253,11 @@ arduino-cli compile --fqbn "$FQBN" --library <path>/zenoh-pico \
 **Default: peer to peer over UDP multicast (`udp/224.0.0.224:7447#iface=eth`), no router.** Two
 boards form a Zenoh network on their own. (`#iface=` is required by zenoh-pico's multicast locator
 check; the ESP32 port ignores its value and lwIP sends from the default netif, the wired one.)
+
+**TTL 1.** 224.0.0.0/24 is link-local (RFC 3171/5771) and must be sent with TTL 1; lwIP's default is 64,
+which Wireshark colours red on every Zenoh datagram ("TTL low or unexpected"). zenoh-pico sets no
+multicast TTL, so the vendored copy is patched: [`zenoh-pico-multicast-ttl1.patch`](zenoh-pico-multicast-ttl1.patch)
+(`patch -p1` inside the zenoh-pico folder). Checked on a capture: all 551 datagrams TTL 1, no expert notes.
 
 | key | |
 |---|---|

@@ -332,6 +332,35 @@ inline esp_netif_t *startNode(uint32_t ip, uint32_t mask) {
   return err == ESP_OK ? nif : nullptr;
 }
 
+// The W5500 as a second interface next to T1S (`mode node`): its own subnet, DHCP when ip is 0,
+// and a lower route priority than T1S so the default route -- and with it Zenoh's multicast --
+// stays on the bus. Nothing is forwarded between the two.
+inline esp_netif_t *startLan(uint32_t ip, uint32_t mask) {
+  esp_eth_handle_t tx = w5500Install();
+  gNodeTx = tx;
+  if (!tx) return nullptr;
+  static esp_netif_inherent_config_t base = ESP_NETIF_INHERENT_DEFAULT_ETH();
+  base.if_key = "ETH_LAN";
+  base.if_desc = "lan";
+  base.route_prio = 10;               // T1S's netif keeps the default 50
+  esp_netif_config_t nifCfg = ESP_NETIF_DEFAULT_ETH();
+  nifCfg.base = &base;
+  esp_netif_t *nif = esp_netif_new(&nifCfg);
+  if (ip) {
+    esp_netif_dhcpc_stop(nif);
+    esp_netif_ip_info_t info = {};
+    info.ip.addr = ip;
+    info.netmask.addr = mask;
+    esp_netif_set_ip_info(nif, &info);
+  }
+  esp_netif_attach(nif, esp_eth_new_netif_glue(tx));
+  countInput(tx, nif);
+  const esp_err_t err = esp_eth_start(tx);
+  if (ip) Con.printf("lan: start: %s, ip " IPSTR "\n", esp_err_to_name(err), IP2STR((esp_ip4_addr_t *)&ip));
+  else Con.printf("lan: start: %s, DHCP\n", esp_err_to_name(err));
+  return err == ESP_OK ? nif : nullptr;
+}
+
 // Bring the W5500 up with no netif, in promiscuous mode, and join it to an already-running
 // LAN865x handle. Returns false and prints why on any failure.
 inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
