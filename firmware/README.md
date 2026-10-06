@@ -291,6 +291,26 @@ its callback fires (task notification instead of the 2 ms loop) and publishing p
 raw UDP is inside zenoh-pico. (A first measurement showed no change; the HAT was still running an
 image an earlier OTA had put in the other app slot -- see "Flashing after an OTA".)
 
+### Time sync (`sync`, `ptp`)
+
+`sync <ip> [n] [ms]` runs the two-way time-transfer exchange PTP and NTP use (t1..t4) against
+`<ip>`'s UDP 5007 and prints clock offset and one-way delay per exchange; the console's *Time sync*
+panel runs it and plots the result. With software timestamps on both boards (ESP-B's W5500 adds
+its 1 ms receive poll on one direction) the offset scatters by **σ ≈ 150–220 µs**, **≈ 50 µs**
+using the lowest-delay 10 %, **≈ 40–50 µs** taking one min-delay exchange per 2 s; the two crystals
+differ by ~1–3 ppm (2026-10-06). Precision only: there is no reference clock on the bench.
+
+**Hardware timestamps (work in progress).** The LAN8651 has a 1588 wall clock (TSU, 40 ns ticks)
+and can prepend an ingress stamp to every received frame and capture a frame's egress time
+(OA_CONFIG0 FTSE/FTSS, TC6 header TSC, TTSCA). The driver carries hooks for both
+(`esp_eth_mac_lan865x_set_ts_hooks`), `ptp on` connects them and `sync` then also reports offsets
+from the node's hardware stamps (sent in a follow-up message, as PTP does). On this bench the chip
+reports the capability (OA_CAP.FTSC = 1), its wall clock runs, and FTSE/FTSS read back set when
+written with SYNC at init (build with `-DLAN865X_FRAME_TIMESTAMPS`; written later they have no
+effect, and SYNC cannot be cleared) -- but no frame has been stamped yet: no RTSA, no TTSCAA. Not
+found: what else gates it. TSN Lab's Raspberry Pi driver for the same HAT does hardware gPTP with
+linuxptp, so a Pi + HAT would show whether the chip stamps there.
+
 ### Flashing after an OTA
 
 An OTA writes the *other* app slot and points `otadata` at it. A later USB flash of the app at

@@ -58,6 +58,14 @@ esp_eth_mac_t *esp_eth_mac_new_lan865x(const eth_lan865x_config_t *lan865x_confi
 esp_err_t esp_eth_mac_lan865x_read_reg(esp_eth_mac_t *mac, uint8_t mms, uint16_t addr, uint32_t *value);
 esp_err_t esp_eth_mac_lan865x_write_reg(esp_eth_mac_t *mac, uint8_t mms, uint16_t addr, uint32_t value);
 
+/* LOCAL PATCH (t1s_hat): frame timestamping. rx: called from the driver's RX task for every frame
+ * that arrived with a prepended timestamp (OA_CONFIG0.FTSE/FTSS set), ts = seconds << 32 | ns of the
+ * chip's wall clock; frame is the frame without it. tx: called per transmitted frame; return true to
+ * have its egress time captured into TTSCAH/L (STATUS0.TTSCAA). Both run in driver context: keep short. */
+typedef void (*esp_eth_mac_lan865x_rx_ts_cb_t)(const uint8_t *frame, uint32_t len, uint64_t ts);
+typedef bool (*esp_eth_mac_lan865x_tx_ts_cb_t)(const uint8_t *frame, uint32_t len);
+void esp_eth_mac_lan865x_set_ts_hooks(esp_eth_mac_lan865x_rx_ts_cb_t rx, esp_eth_mac_lan865x_tx_ts_cb_t tx);
+
 #ifdef __cplusplus
 }
 #endif

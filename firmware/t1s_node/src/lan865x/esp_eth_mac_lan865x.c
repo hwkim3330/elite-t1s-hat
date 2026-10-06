@@ -251,6 +251,10 @@ static bool lan865x_parity(uint32_t value)
     return !(value & 0x1);
 }
 
+/* LOCAL PATCH (t1s_hat): frame timestamp hooks, see esp_eth_mac_lan865x_set_ts_hooks() */
+static esp_eth_mac_lan865x_rx_ts_cb_t s_rx_ts_cb = NULL;
+static esp_eth_mac_lan865x_tx_ts_cb_t s_tx_ts_cb = NULL;
+
 static esp_err_t lan865x_frame_transmit(emac_lan865x_t *emac, uint8_t *frame, uint32_t length)
 {
     esp_err_t ret = ESP_OK;
@@ -272,6 +276,10 @@ static esp_err_t lan865x_frame_transmit(emac_lan865x_t *emac, uint8_t *frame, ui
         if (i == 0) {
             tx_block->header.sv = 1;
             tx_block->header.swo = 0;
+            // LOCAL PATCH: ask for an egress timestamp into capture register A
+            if (s_tx_ts_cb && s_tx_ts_cb(frame, length)) {
+                tx_block->header.tsc = 1;
+            }
         }
         if (i == chunks - 1) {
             tx_block->header.ev = 1;
@@ -304,8 +312,19 @@ err_inv_data:
     return ret;
 }
 
+/* LOCAL PATCH (t1s_hat): frame timestamp hooks. With OA_CONFIG0.FTSE set the chip prepends the
+ * ingress timestamp to each received frame (footer RTSA on the start block) and captures the egress
+ * time of a frame whose start header carries TSC != 0. Not in upstream. */
+
+void esp_eth_mac_lan865x_set_ts_hooks(esp_eth_mac_lan865x_rx_ts_cb_t rx, esp_eth_mac_lan865x_tx_ts_cb_t tx)
+{
+    s_rx_ts_cb = rx;
+    s_tx_ts_cb = tx;
+}
+
 static esp_err_t lan865x_frame_receive(emac_lan865x_t *emac, uint8_t *frame, uint32_t *length, uint8_t *remain)
 {
+    bool ts_added = false;    // LOCAL PATCH: the start block carried a prepended timestamp
     esp_err_t ret = ESP_OK;
     uint8_t *rx_buffer_p = frame;
     lan865x_tx_block_t *tx_block;
@@ -353,6 +372,7 @@ static esp_err_t lan865x_frame_receive(emac_lan865x_t *emac, uint8_t *frame, uin
                     // Data should be always aligned to zero due to LAN865X_OA_CONFIG0_RECV_FRAME_ALIGN_ZERO
                     ESP_GOTO_ON_FALSE(rx_block->footer.swo == 0, ESP_ERR_INVALID_STATE, err, TAG, "partial block received");
                     start_found = true;
+                    ts_added = rx_block->footer.rtsa;   // LOCAL PATCH
                 } else {
                     continue;
                 }
@@ -369,6 +389,19 @@ static esp_err_t lan865x_frame_receive(emac_lan865x_t *emac, uint8_t *frame, uin
             rx_buffer_p += LAN865X_DATA_BLOCK_SIZE;
         }
     } while (rx_block->footer.dv == 1 && !rx_block->footer.ev);
+
+    // LOCAL PATCH: strip a prepended 64-bit timestamp (FTSS = 1: seconds, then nanoseconds, big-endian)
+    if (ts_added && actual_length >= 8) {
+        uint64_t ts = 0;
+        for (int i = 0; i < 8; i++) {
+            ts = (ts << 8) | frame[i];
+        }
+        memmove(frame, frame + 8, actual_length - 8);
+        actual_length -= 8;
+        if (s_rx_ts_cb) {
+            s_rx_ts_cb(frame, actual_length, ts);
+        }
+    }
 
 err:
     if (remain != NULL) {
@@ -977,7 +1010,15 @@ static esp_err_t emac_lan865x_init(esp_eth_mac_t *mac)
         .bps = LAN865X_OA_CONFIG0_BLOCK_PAYLOAD_SIZE_64,
         .rfa = LAN865X_OA_CONFIG0_RECV_FRAME_ALIGN_ZERO,
         .prote = 0,        // Disable control data protection
+#ifdef LAN865X_FRAME_TIMESTAMPS
+        // LOCAL PATCH: frame timestamps (latched with SYNC: setting FTSE later has no effect), 64-bit;
+        // the receive path strips a prepended stamp. On the bench (2026-10-06) the chip accepts FTSE
+        // but has not yet stamped a frame -- see firmware/README.md, "Hardware timestamps".
+        .ftse = 1,
+        .ftss = 1,
+#else
         .ftse = 0,         // Disable frame timestamp
+#endif
         .rxcte = 0,        // Disable receive cut-through
         .txcte = 0,        // Disable transmit cut-through
         .txfcsve = 0,      // Disable transmit FCS validation

@@ -698,6 +698,95 @@ static void cmdEvt(const char *rest) {
 // its 1 ms receive poll: this measures what software time sync over this bench can reach.
 struct SyncMsg { uint32_t magic, seq; int64_t t1, t2, t3; };
 static constexpr uint32_t kSyncMagic = 0x53594e43;   // "SYNC"
+static constexpr uint32_t kSyncFollow = 0x53594e46;  // "SYNF": the answerer's hardware stamps, sent after
+
+// Hardware stamps (`ptp on`): the LAN8651 stamps a frame's ingress and, when asked, its egress
+// with its own wall clock (TSU, 25 MHz, 40 ns per tick), seconds:nanoseconds. The driver hooks
+// below pick out the sync exchange by UDP port 5007 and file the stamps by sequence number.
+static volatile bool gPtpOn = false;
+static volatile uint32_t gPtpRx = 0, gPtpTxAsk = 0, gPtpTxGot = 0, gPtpTxMiss = 0, gPtpFu = 0, gPtpRxMiss = 0, gPtpAnyRts = 0;
+struct HwStamp { volatile uint32_t seq; volatile int64_t ns; };
+static HwStamp gRxStamp[64];
+static int64_t tsToNs(uint64_t ts) { return (int64_t)(ts >> 32) * 1000000000LL + (int64_t)(ts & 0xffffffffu); }
+// IPv4/UDP frame -> pointer to the UDP payload and the ports, or nullptr
+static const uint8_t *udpOf(const uint8_t *f, uint32_t len, uint16_t &sport, uint16_t &dport) {
+  if (len < 14 + 20 + 8 || f[12] != 0x08 || f[13] != 0x00) return nullptr;
+  const uint8_t *ip = f + 14;
+  const uint32_t ihl = (ip[0] & 0x0f) * 4;
+  if (ip[9] != 17 || len < 14 + ihl + 8 + 8) return nullptr;
+  const uint8_t *u = ip + ihl;
+  sport = (u[0] << 8) | u[1];
+  dport = (u[2] << 8) | u[3];
+  return u + 8;
+}
+static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
+  gPtpAnyRts = gPtpAnyRts + 1;
+  uint16_t sp, dp;
+  const uint8_t *p = udpOf(f, len, sp, dp);
+  if (!p || dp != 5007) return;
+  uint32_t magic, seq;
+  memcpy(&magic, p, 4);
+  memcpy(&seq, p + 4, 4);
+  if (magic != kSyncMagic) return;
+  gRxStamp[seq & 63].ns = tsToNs(ts);
+  gRxStamp[seq & 63].seq = seq;
+  gPtpRx = gPtpRx + 1;
+}
+static bool wantTxStamp(const uint8_t *f, uint32_t len) {
+  uint16_t sp, dp;
+  const uint8_t *p = udpOf(f, len, sp, dp);
+  if (!p || sp != 5007) return false;
+  uint32_t magic;
+  memcpy(&magic, p, 4);
+  if (magic != kSyncMagic) return false;   // the reply, not the follow-up
+  gPtpTxAsk = gPtpTxAsk + 1;
+  return true;
+}
+
+static void cmdPtp(const char *a) {
+  if (!gMac) { Con.println("ptp: no LAN8651"); return; }
+  if (!strcmp(a, "on") || !strcmp(a, "off")) {
+    const bool on = !strcmp(a, "on");
+    // TSU: 40 ns per 25 MHz tick (DS60001734F 4.5.1); OA_CONFIG0 bit 7 FTSE, bit 6 FTSS (64-bit stamps)
+    // FTSE/FTSS are set by the driver at init together with SYNC (writing them later has no effect,
+    // found 2026-10-06); `ptp on` only connects the hooks that use the stamps
+    esp_eth_mac_lan865x_write_reg(gMac, 1, 0x77, 40);
+    esp_eth_mac_lan865x_set_ts_hooks(on ? onRxStamp : nullptr, on ? wantTxStamp : nullptr);
+    gPtpOn = on;
+  }
+  uint32_t c0 = 0, ti = 0, sl = 0, ns = 0;
+  esp_eth_mac_lan865x_read_reg(gMac, 0, 0x04, &c0);
+  esp_eth_mac_lan865x_read_reg(gMac, 1, 0x77, &ti);
+  esp_eth_mac_lan865x_read_reg(gMac, 1, 0x74, &sl);
+  esp_eth_mac_lan865x_read_reg(gMac, 1, 0x75, &ns);
+  Con.printf("ptp: %s, OA_CONFIG0 0x%08lx (FTSE %lu FTSS %lu), TSU increment %lu ns, wall clock %lu.%09lu s\n",
+             gPtpOn ? "hardware stamps on" : "off", (unsigned long)c0, (unsigned long)((c0 >> 7) & 1),
+             (unsigned long)((c0 >> 6) & 1), (unsigned long)ti, (unsigned long)sl, (unsigned long)ns);
+  uint32_t st = 0;
+  esp_eth_mac_lan865x_read_reg(gMac, 0, 0x08, &st);
+  Con.printf("ptp: frames with an ingress stamp %lu (sync %lu, not found %lu), egress asked %lu got %lu missed %lu, "
+             "follow-ups %lu, STATUS0 0x%08lx\n", (unsigned long)gPtpAnyRts, (unsigned long)gPtpRx,
+             (unsigned long)gPtpRxMiss, (unsigned long)gPtpTxAsk, (unsigned long)gPtpTxGot, (unsigned long)gPtpTxMiss,
+             (unsigned long)gPtpFu, (unsigned long)st);
+}
+
+// egress stamp of the frame just sent (capture register A), or -1
+static int64_t takeTxStamp() {
+  uint32_t st = 0;
+  for (int i = 0; i < 50; i++) {
+    if (esp_eth_mac_lan865x_read_reg(gMac, 0, 0x08, &st) == ESP_OK && (st & (1u << 8))) {
+      uint32_t hi = 0, lo = 0;
+      esp_eth_mac_lan865x_read_reg(gMac, 0, 0x10, &hi);
+      esp_eth_mac_lan865x_read_reg(gMac, 0, 0x11, &lo);
+      esp_eth_mac_lan865x_write_reg(gMac, 0, 0x08, 1u << 8);   // TTSCAA is write-1-to-clear
+      gPtpTxGot = gPtpTxGot + 1;
+      return (int64_t)hi * 1000000000LL + lo;
+    }
+    delayMicroseconds(100);
+  }
+  gPtpTxMiss = gPtpTxMiss + 1;
+  return -1;
+}
 
 static void syncTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
@@ -716,6 +805,14 @@ static void syncTask(void *) {
     m.t2 = t2;
     m.t3 = esp_timer_get_time();
     sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);
+    if (gPtpOn) {   // like PTP's Follow_Up: the precise times go out after the message they describe
+      const int64_t t3h = takeTxStamp();
+      const HwStamp r = gRxStamp[m.seq & 63];
+      if (r.seq != m.seq) gPtpRxMiss = gPtpRxMiss + 1;
+      SyncMsg fu = {kSyncFollow, m.seq, m.t1, r.seq == m.seq ? r.ns : -1, t3h};
+      gPtpFu = gPtpFu + 1;
+      sendto(s, &fu, sizeof(fu), 0, (sockaddr *)&from, fl);
+    }
   }
 }
 
@@ -732,8 +829,13 @@ static void cmdSync(const char *rest) {
   timeval tv = {0, 100000};
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
   // per exchange: t1 (asker, us since boot), offset and delay (us); printed after the run
-  static int64_t T1[2000];
-  static int32_t OFF[2000], DLY[2000];
+  static int64_t *T1 = nullptr, *HOFF = nullptr;     // PSRAM: 56 KB would crowd internal RAM
+  static int32_t *OFF = nullptr, *DLY = nullptr, *HDLY = nullptr;
+  if (!T1) {
+    T1 = (int64_t *)ps_malloc(2000 * 8); HOFF = (int64_t *)ps_malloc(2000 * 8);
+    OFF = (int32_t *)ps_malloc(2000 * 4); DLY = (int32_t *)ps_malloc(2000 * 4); HDLY = (int32_t *)ps_malloc(2000 * 4);
+  }
+  int hw = 0;
   int got = 0;
   SyncMsg m, in;
   for (int i = 0; i < count; i++) {
@@ -746,18 +848,39 @@ static void cmdSync(const char *rest) {
       T1[got] = in.t1;
       OFF[got] = (int32_t)(((in.t2 - in.t1) + (in.t3 - t4)) / 2);
       DLY[got] = (int32_t)(((t4 - in.t1) - (in.t3 - in.t2)) / 2);
+      HOFF[got] = INT64_MIN;
+      // a follow-up with the answerer's hardware stamps, if it runs `ptp on`
+      SyncMsg fu;
+      timeval tf = {0, 20000};
+      setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tf, sizeof(tf));
+      while (recv(s, &fu, sizeof(fu), 0) == (int)sizeof(fu)) {
+        if (fu.magic != kSyncFollow || fu.seq != m.seq) continue;
+        if (fu.t2 >= 0 && fu.t3 >= 0) {   // ns on the LAN8651 clock against us on this board
+          HOFF[got] = ((fu.t2 - in.t1 * 1000) + (fu.t3 - t4 * 1000)) / 2;
+          HDLY[got] = (int32_t)(((t4 - in.t1) * 1000 - (fu.t3 - fu.t2)) / 2);
+          hw++;
+        }
+        break;
+      }
+      setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
       got++;
       break;
     }
     if (ivMs > 0) delay(ivMs);
   }
   close(s);
-  Con.printf("sync: n %d answered %d (interval %d ms)\n", count, got, ivMs);
-  char line[240];
-  for (int i = 0; i < got; i += 10) {
+  Con.printf("sync: n %d answered %d (interval %d ms), hardware stamps on %d\n", count, got, ivMs, hw);
+  // t (us), offset (us), delay (us) from software stamps; with hardware stamps two more columns:
+  // offset (ns, minus the first hardware offset) and delay (ns)
+  int64_t h0 = INT64_MIN;
+  for (int k = 0; k < got && h0 == INT64_MIN; k++) h0 = HOFF[k];
+  char line[300];
+  for (int i = 0; i < got; i += 8) {
     int o = snprintf(line, sizeof(line), "syncs:");
-    for (int k = i; k < got && k < i + 10; k++)
+    for (int k = i; k < got && k < i + 8; k++) {
       o += snprintf(line + o, sizeof(line) - o, " %lld,%ld,%ld", (long long)(T1[k] - T1[0]), (long)OFF[k], (long)DLY[k]);
+      if (HOFF[k] != INT64_MIN) o += snprintf(line + o, sizeof(line) - o, ",%lld,%ld", (long long)(HOFF[k] - h0), (long)HDLY[k]);
+    }
     Con.println(line);
   }
   Con.println("sync: done");
@@ -990,7 +1113,8 @@ static void help() {
       "rtt <ip> [n] [bytes] [ms]  UDP echo round trip in us (default 100 x 64 B, 5 ms apart)\n"
       "w <steer> <y> <z> <rz> [btn]  latest operator input (the PC's wheel feed; silent)\n"
       "ctl <ip> [ms] [sec] [dl ms]  16 B control messages to <ip>'s echo: every ms, or 0 = on change\n"
-      "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange, software stamps): offset, delay\n"
+      "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange): offset, delay; + hardware if the peer runs ptp on\n"
+      "ptp [on|off]               LAN8651 hardware frame stamps (TSU wall clock) for the sync exchange\n"
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
@@ -1117,6 +1241,7 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "ctl")) cmdCtl(rest);
   else if (!strcmp(cmd, "evt")) cmdEvt(rest);
   else if (!strcmp(cmd, "sync")) cmdSync(rest);
+  else if (!strcmp(cmd, "ptp")) cmdPtp(a);
   else if (!strcmp(cmd, "rtt") && n >= 1) {
     int cnt = 100, size = 64, iv = 5;
     sscanf(rest, "%*s %d %d %d", &cnt, &size, &iv);
