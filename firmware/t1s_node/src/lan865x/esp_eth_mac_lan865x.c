@@ -1005,6 +1005,10 @@ static esp_err_t emac_lan865x_init(esp_eth_mac_t *mac)
     };
     ESP_GOTO_ON_ERROR(lan865x_set_reg_bits(emac, LAN865X_MMS_MAC, LAN865X_MAC_NCR_REG_ADDR, mac_ncr_mask.val), err, TAG, "MAC_NCR configuration failed");
 
+#ifdef LAN865X_FRAME_TIMESTAMPS
+    // LOCAL PATCH: TSU increment (40 ns per 25 MHz tick) before SYNC, the order TSN Lab's driver uses
+    ESP_GOTO_ON_ERROR(lan865x_write_reg(emac, LAN865X_MMS_MAC, 0x77, 40), err, TAG, "MAC_TI configuration failed");
+#endif
     // Configure OA_CONFIG0
     lan865x_oa_config0_reg_t oa_config0 = {
         .bps = LAN865X_OA_CONFIG0_BLOCK_PAYLOAD_SIZE_64,

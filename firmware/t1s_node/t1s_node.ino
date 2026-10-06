@@ -748,9 +748,15 @@ static void cmdPtp(const char *a) {
   if (!strcmp(a, "on") || !strcmp(a, "off")) {
     const bool on = !strcmp(a, "on");
     // TSU: 40 ns per 25 MHz tick (DS60001734F 4.5.1); OA_CONFIG0 bit 7 FTSE, bit 6 FTSS (64-bit stamps)
-    // FTSE/FTSS are set by the driver at init together with SYNC (writing them later has no effect,
-    // found 2026-10-06); `ptp on` only connects the hooks that use the stamps
+    // FTSE/FTSS are set by the driver at init together with SYNC (writing them later has no effect).
+    // The stamp itself comes from the PHY's packet matcher, which signals the SFD on the wire
+    // (DS60001734F 4.5.2.2); out of reset it is OFF and matches only gPTP Sync (0x88F710 at nibble 30).
+    // Match every frame at the SFD, as Microchip's drivers do: mask 0xFFFFFF, location 0, enable.
+    // (The vendored driver has these writes, but on a path this chip revision does not take.)
     esp_eth_mac_lan865x_write_reg(gMac, 1, 0x77, 40);
+    const uint16_t mm[][2] = {{0x43, 0x00FF}, {0x44, 0xFFFF}, {0x45, 0}, {0x53, 0x00FF}, {0x54, 0xFFFF}, {0x55, 0},
+                              {0x40, on ? 2 : 0}, {0x50, on ? 2 : 0}};   // TXMCTL.TXME, RXMCTL.RXME
+    for (auto &r : mm) esp_eth_mac_lan865x_write_reg(gMac, 4, r[0], r[1]);
     esp_eth_mac_lan865x_set_ts_hooks(on ? onRxStamp : nullptr, on ? wantTxStamp : nullptr);
     gPtpOn = on;
   }

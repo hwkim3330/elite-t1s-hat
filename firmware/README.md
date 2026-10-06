@@ -300,16 +300,25 @@ its 1 ms receive poll on one direction) the offset scatters by **σ ≈ 150–22
 using the lowest-delay 10 %, **≈ 40–50 µs** taking one min-delay exchange per 2 s; the two crystals
 differ by ~1–3 ppm (2026-10-06). Precision only: there is no reference clock on the bench.
 
-**Hardware timestamps (work in progress).** The LAN8651 has a 1588 wall clock (TSU, 40 ns ticks)
-and can prepend an ingress stamp to every received frame and capture a frame's egress time
-(OA_CONFIG0 FTSE/FTSS, TC6 header TSC, TTSCA). The driver carries hooks for both
-(`esp_eth_mac_lan865x_set_ts_hooks`), `ptp on` connects them and `sync` then also reports offsets
-from the node's hardware stamps (sent in a follow-up message, as PTP does). On this bench the chip
-reports the capability (OA_CAP.FTSC = 1), its wall clock runs, and FTSE/FTSS read back set when
-written with SYNC at init (build with `-DLAN865X_FRAME_TIMESTAMPS`; written later they have no
-effect, and SYNC cannot be cleared) -- but no frame has been stamped yet: no RTSA, no TTSCAA. Not
-found: what else gates it. TSN Lab's Raspberry Pi driver for the same HAT does hardware gPTP with
-linuxptp, so a Pi + HAT would show whether the chip stamps there.
+**Hardware timestamps (`ptp on`, build with `-DLAN865X_FRAME_TIMESTAMPS`).** The LAN8651 has a 1588 wall
+clock (TSU, 40 ns ticks), prepends an ingress stamp to received frames and captures a frame's egress
+time (OA_CONFIG0 FTSE/FTSS, TC6 header TSC, TTSCA). The driver carries hooks for both
+(`esp_eth_mac_lan865x_set_ts_hooks`); `ptp on` connects them and `sync` then also reports offsets
+from the node's hardware stamps, sent in a follow-up as PTP does. Two things had to be found:
+
+- FTSE/FTSS take effect only when written **with SYNC at init** (later writes read back set but do
+  nothing, and SYNC cannot be cleared) -- hence the build flag, which costs 8 bytes of SPI per
+  received frame.
+- The stamp is triggered by the **PHY's packet matcher** at the SFD on the wire (DS60001734F 4.5.2.2),
+  which out of reset is **off** and set to gPTP Sync only. Symptom: STATUS1.TTSCMA ("capture requested,
+  not triggered"), no RTSA. `ptp on` sets it to match every frame (mask 0xFFFFFF, location 0,
+  TXMCTL/RXMCTL enable) as Microchip's drivers do; the vendored driver has those writes on a path
+  this chip revision does not take.
+
+Measured 2026-10-06, node hardware vs ESP-B software (W5500): offset σ per 2 s **16.7 µs** (software on
+both sides 43 µs), lowest-delay 10 % 31 µs; the TSU runs off the HAT's 25 MHz crystal, ~20 ppm from
+the ESP32's. The far side is the limit here (W5500 poll, converter, PLCA wait): hardware-to-hardware
+needs a second LAN8651 node.
 
 ### Flashing after an OTA
 
