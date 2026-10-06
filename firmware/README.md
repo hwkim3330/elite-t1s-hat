@@ -153,10 +153,13 @@ save / reboot
 Settings live in NVS (`t1s` namespace). A fresh board comes up with **PLCA off
 (CSMA/CD), 192.168.50.9, SPI at 25 MHz**.
 
-**Asked vs actual SPI clock.** The ESP32-S3's SPI peripheral divides 80 MHz by an integer, so `spi 25` runs at
-**26.67 MHz**, `spi 22` and `spi 20` at 20, `spi 18` and `spi 15` at 16, `spi 12` at 11.43 (read from the board,
-2026-10-06). Bring-up prints both (`t1s: SPI 25 MHz asked, 26.67 MHz actual`) and `status` shows the actual
-one. Every "25 MHz" result in these docs and the reports was measured at 26.67 MHz.
+**Asked vs actual SPI clock.** The ESP32-S3's SPI peripheral divides 80 MHz by an integer and rounds to the
+nearest divider, so `spi 25` used to run at **26.67 MHz** -- above the LAN8651's 25 MHz maximum (DS60001734F,
+Table 9-9, f<sub>SCK</sub>). Since 2026-10-06 bring-up lowers the request until the clock that runs is
+<= 25 MHz: `spi 25` and `spi 22` run at **20 MHz** (80/4, the fastest in-spec clock on this chip), `spi 18`
+and `spi 15` at 16, `spi 12` at 11.43. Bring-up prints both (`t1s: SPI 25 MHz asked, 20.00 MHz actual`) and
+`status` shows the actual one. Every "25 MHz" result in these docs and the reports before 2026-10-06 was
+measured at 26.67 MHz, out of spec.
 
 **SPI clock fallback.** Bring-up tries the saved clock, then 20, 12 and 4 MHz, and keeps the
 first one the driver installs at (the driver checks parity on every control reply, so a clock
@@ -216,8 +219,8 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
   capture/generator only), so the firmware drives the Elite's own LED (IO38)
   from PLCA_STS: solid = beacons seen, fast blink = no beacons, slow blink = no
   link. Rev C boards have no LEDs of their own.
-- **SPI clock:** 25 MHz is now the default, with the automatic step-down above. A LAN8651
-  HAT on this firmware ran clean at 25 MHz asked (26.67 actual): 9.0 Mbit/s to the node and
+- **SPI clock:** 25 MHz is the default request (20 MHz actual, see above), with the automatic step-down. A LAN8651
+  HAT ran clean at 25 MHz asked (26.67 actual, out of spec, before the clamp): 9.0 Mbit/s to the node and
   9.5 from it, against 6.0 / 6.3 at 12 MHz asked (11.43 actual). The to-node rates were read
   by the board's sink, which then ran ≈0.5 % high (fixed in cf0ba44); see the
   [errata](https://github.com/hwkim3330/t1s-eval/blob/main/ERRATA.md). The step-down itself has not run on hardware.

@@ -31,13 +31,17 @@
 // w5500_spi.h (shared with the W5500 bench firmware) declares this extern; one definition per image.
 W5500Spi *gW5500Spi = nullptr;
 
-// The LAN8651 is rated to 25 MHz SCLK, and every frame crosses this link, so the clock IS the
-// throughput: measured with a LAN8651 HAT on a 2x20 riser, 12 MHz gives 6.0/6.3 Mbit/s, 20 MHz
-// 8.0/8.4, 25 MHz 9.0/9.5 (to/from the node). So 25 is the default, and bring-up steps down
+// The LAN8651 is rated to 25 MHz SCLK (DS60001734F, Table 9-9), and every frame crosses this link,
+// so the clock IS the throughput. The ESP32-S3 divides 80 MHz by an integer and rounds to the
+// nearest divider, so asking 25 used to run 80/3 = 26.67 MHz -- out of spec; bring-up now lowers
+// the request until the clock that actually runs is <= 25, which on this chip means 20 MHz (80/4).
+// Measured with a LAN8651 HAT: 11.43 MHz gives 6.0/6.3 Mbit/s, 20 MHz 8.0/8.4, and the out-of-spec
+// 26.67 MHz 9.0/9.5 (to/from the node). 25 stays the default request, and bring-up steps down
 // (25 -> 20 -> 12 -> 4) by itself if the driver cannot install at a clock -- the driver checks
 // the parity of every control reply, so a clock the wiring cannot carry fails install rather
 // than corrupting silently. `spi <mhz>` + `save` sets the starting clock.
 constexpr uint8_t kDefaultSpiMhz = 25;
+constexpr int kSpiMaxHz = 25 * 1000 * 1000;   // LAN8651 fSCK max
 
 // PLCA node ID 255 means "PLCA off, plain CSMA/CD". 0 is the coordinator, which sends the
 // BEACON and whose node count sets the cycle; every bus with PLCA needs exactly one.
@@ -245,9 +249,16 @@ static bool t1sStart(bool withNetif) {
   phyCfg.reset_gpio_num = -1;  // done above
   for (uint8_t mhz : steps) {
     if (mhz > gCfg.spiMhz) continue;           // only ever step down from the configured clock
+    // Never above the LAN8651's 25 MHz: walk the request down until the divider it lands on is in spec.
+    int hz = mhz * 1000 * 1000;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    while (hz > 1000000 && spi_get_actual_clock(80 * 1000 * 1000, hz, 128) > kSpiMaxHz) hz -= 500000;
+    hz = spi_get_actual_clock(80 * 1000 * 1000, hz, 128);
+#pragma GCC diagnostic pop
     dev = {};
     dev.mode = 0;
-    dev.clock_speed_hz = mhz * 1000 * 1000;
+    dev.clock_speed_hz = hz;
     dev.spics_io_num = kPinT1sCs;
     dev.queue_size = 20;
     // Field by field rather than ETH_LAN865X_DEFAULT_CONFIG: that macro lists its designators
@@ -269,11 +280,8 @@ static bool t1sStart(bool withNetif) {
     Con.printf("t1s: driver install at %u MHz: %s\n", mhz, esp_err_to_name(err));
     if (err == ESP_OK) {
       gSpiMhzRunning = mhz;
-      // 25 asked gives 80/3 = 26.67, 22 and 20 both give 20, 18 and 15 both give 16, 12 gives 11.43
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-      gSpiActualMhz = spi_get_actual_clock(80 * 1000 * 1000, mhz * 1000 * 1000, 128) / 1e6f;
-#pragma GCC diagnostic pop
+      // 25 and 22 asked both run 20 (80/4), 18 and 15 give 16, 12 gives 11.43
+      gSpiActualMhz = hz / 1e6f;
       Con.printf("t1s: SPI %u MHz asked, %.2f MHz actual\n", mhz, gSpiActualMhz);
       break;
     }
