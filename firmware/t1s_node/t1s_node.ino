@@ -472,6 +472,162 @@ static void cmdSink(bool reset) {
 
 // Round trip over UDP echo (port 7 on every t1s_node) with the us timer: the latency figure
 // `ping` cannot give (its timer is 1 ms). Prints a summary, then every sample, 25 per line.
+
+// ---------------------------------------------------------------- control messages (`w`, `ctl`)
+// A live operator input (a G923 wheel read on the PC, fed in over USB as `w` lines) carried as
+// small CAN-like messages: 16 B UDP to the peer's echo port 7, either every <period> ms or only
+// when the input changes. The echo comes straight back, so the sender measures round trip,
+// loss and deadline misses with its own clock -- no clock sync between boards.
+struct CtlMsg { uint32_t seq, tUs; uint16_t steer; uint8_t y, z, rz, flags; uint16_t btn; };
+static_assert(sizeof(CtlMsg) == 16, "16 B control message");
+static volatile uint16_t gWSteer = 32768;
+static volatile uint8_t gWY = 255, gWZ = 255, gWRz = 255;
+static volatile uint16_t gWBtn = 0;
+static volatile uint32_t gWChanges = 0, gWUs = 0, gWLines = 0;
+struct CtlRun { char host[16]; int periodMs, secs, deadlineUs; };
+static CtlRun gCtl;
+static volatile bool gCtlRunning = false, gCtlStop = false;
+static TaskHandle_t gCtlTask = nullptr;
+
+static void cmdWheel(const char *rest) {   // `w <steer> <y> <z> <rz> [btn]`: silent, ~1 kHz
+  unsigned st = 32768, y = 255, z = 255, rz = 255, btn = 0;
+  if (sscanf(rest, "%u %u %u %u %u", &st, &y, &z, &rz, &btn) < 1) return;
+  gWLines = gWLines + 1;
+  if (st == gWSteer && y == gWY && z == gWZ && rz == gWRz && btn == gWBtn) return;
+  gWSteer = st; gWY = y; gWZ = z; gWRz = rz; gWBtn = btn;
+  gWUs = (uint32_t)esp_timer_get_time();
+  gWChanges = gWChanges + 1;
+  if (gCtlTask && gCtlRunning && gCtl.periodMs == 0) xTaskNotifyGive(gCtlTask);
+}
+
+// Sender: woken by a hardware timer (periodic) or by a changed `w` line (on change; 100 ms
+// heartbeat), so the period does not depend on lwIP's 1 ms-tick select. Receiver: its own task,
+// blocking on the echo socket.
+static int gCtlSock = -1;
+static int32_t *gCtlRtt = nullptr;      // per seq, us; -1 = no echo
+static uint32_t *gCtlAge = nullptr;     // input age at send (last `w` change -> send), us
+static volatile uint32_t gCtlSent = 0, gCtlEchoed = 0, gCtlLate = 0, gCtlSendFail = 0;
+static volatile int64_t gCtlLastEcho = 0, gCtlMaxGap = 0;
+static esp_timer_handle_t gCtlTimer = nullptr;
+static constexpr int kCtlMax = 200000;
+
+static void ctlTick(void *) { if (gCtlTask) xTaskNotifyGive(gCtlTask); }
+
+static void ctlRecvTask(void *) {
+  CtlMsg in;
+  timeval tv = {0, 100000};
+  setsockopt(gCtlSock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+  while (gCtlRunning) {
+    if (recv(gCtlSock, &in, sizeof(in), 0) != (int)sizeof(in)) continue;
+    const int64_t t = esp_timer_get_time();
+    if (in.seq < gCtlSent && gCtlRtt[in.seq] < 0) {
+      gCtlRtt[in.seq] = (int32_t)((uint32_t)t - in.tUs);
+      gCtlEchoed = gCtlEchoed + 1;
+      if (gCtlRtt[in.seq] > gCtl.deadlineUs) gCtlLate = gCtlLate + 1;
+      if (gCtlLastEcho && t - gCtlLastEcho > gCtlMaxGap) gCtlMaxGap = t - gCtlLastEcho;
+      gCtlLastEcho = t;
+    }
+  }
+  vTaskDelete(nullptr);
+}
+
+static void ctlTask(void *) {
+  const CtlRun r = gCtl;
+  sockaddr_in to = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(7);
+  inet_aton(r.host, &to.sin_addr);
+  gCtlRtt = (int32_t *)ps_malloc(kCtlMax * 4);
+  gCtlAge = (uint32_t *)ps_malloc(kCtlMax * 4);
+  gCtlSock = socket(AF_INET, SOCK_DGRAM, 0);
+  if (!gCtlRtt || !gCtlAge || gCtlSock < 0) {
+    Con.println("ctl: no memory/socket");
+    gCtlRunning = false; gCtlTask = nullptr; vTaskDelete(nullptr);
+  }
+  gCtlSent = gCtlEchoed = gCtlLate = gCtlSendFail = 0;
+  gCtlLastEcho = gCtlMaxGap = 0;
+  TaskHandle_t rx;
+  xTaskCreatePinnedToCore(ctlRecvTask, "ctl_rx", 4096, nullptr, 6, &rx, 1);
+  esp_timer_create_args_t ta = {};
+  ta.callback = ctlTick;
+  ta.name = "ctl";
+  esp_timer_create(&ta, &gCtlTimer);
+  esp_timer_start_periodic(gCtlTimer, r.periodMs > 0 ? r.periodMs * 1000 : 100000);
+  const int64_t t0 = esp_timer_get_time(), tEnd = t0 + (int64_t)r.secs * 1000000;
+  uint32_t seen = gWChanges;
+  int64_t lastSend = 0;
+  CtlMsg m = {};
+  while (!gCtlStop && esp_timer_get_time() < tEnd && gCtlSent < (uint32_t)kCtlMax) {
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(20));
+    const int64_t now = esp_timer_get_time();
+    if (r.periodMs == 0 && gWChanges == seen && now - lastSend < 95000) continue;   // on change + heartbeat
+    seen = gWChanges;
+    const uint32_t i = gCtlSent;
+    m.seq = i;
+    m.tUs = (uint32_t)now;
+    m.steer = gWSteer; m.y = gWY; m.z = gWZ; m.rz = gWRz; m.btn = gWBtn;
+    m.flags = r.periodMs > 0 ? 1 : 2;
+    gCtlRtt[i] = -1;
+    gCtlAge[i] = (uint32_t)now - gWUs;
+    gCtlSent = i + 1;
+    if (sendto(gCtlSock, &m, sizeof(m), 0, (sockaddr *)&to, sizeof(to)) != (int)sizeof(m)) gCtlSendFail = gCtlSendFail + 1;
+    lastSend = now;
+  }
+  esp_timer_stop(gCtlTimer);
+  esp_timer_delete(gCtlTimer);
+  gCtlTimer = nullptr;
+  delay(300);                       // stragglers
+  const double secs = (esp_timer_get_time() - t0) / 1e6 - 0.3;
+  gCtlRunning = false;              // the receiver exits within its 100 ms timeout
+  delay(150);
+  close(gCtlSock);
+  gCtlSock = -1;
+  const uint32_t sent = gCtlSent;
+  int32_t *v = (int32_t *)ps_malloc(kCtlMax * 4);
+  int m2 = 0;
+  for (uint32_t i = 0; i < sent; i++) if (gCtlRtt[i] >= 0) v[m2++] = gCtlRtt[i];
+  std::sort(v, v + m2);
+  std::sort(gCtlAge, gCtlAge + sent);
+  Con.printf("ctl: %s %d ms, %.1f s: sent %lu (%.0f/s) echoed %lu lost %lu late>%d us %lu max echo gap %lld us"
+             " send-fail %lu\n",
+             r.periodMs > 0 ? "periodic" : "on-change", r.periodMs, secs, (unsigned long)sent, sent / secs,
+             (unsigned long)gCtlEchoed, (unsigned long)(sent - gCtlEchoed), r.deadlineUs, (unsigned long)gCtlLate,
+             (long long)gCtlMaxGap, (unsigned long)gCtlSendFail);
+  if (m2)
+    Con.printf("ctl rtt: min %ld p50 %ld p90 %ld p99 %ld p99.9 %ld max %ld us\n", (long)v[0], (long)v[m2 / 2],
+               (long)v[m2 * 9 / 10], (long)v[m2 * 99 / 100], (long)v[m2 * 999 / 1000], (long)v[m2 - 1]);
+  if (sent)
+    Con.printf("ctl age: input change -> send p50 %lu p99 %lu max %lu us; wheel lines %lu, changes %lu\n",
+               (unsigned long)gCtlAge[sent / 2], (unsigned long)gCtlAge[sent * 99 / 100],
+               (unsigned long)gCtlAge[sent - 1], (unsigned long)gWLines, (unsigned long)gWChanges);
+  free(v); free(gCtlRtt); free(gCtlAge);
+  gCtlRtt = nullptr; gCtlAge = nullptr;
+  gCtlTask = nullptr;
+  vTaskDelete(nullptr);
+}
+
+static void cmdCtl(const char *rest) {
+  char host[16] = "";
+  int period = 2, secs = 10, deadlineMs = 5;
+  if (sscanf(rest, "%15s %d %d %d", host, &period, &secs, &deadlineMs) < 1) {
+    Con.println("ctl <ip> [period ms, 0 = on change] [sec] [deadline ms] | ctl stop");
+    return;
+  }
+  if (!strcmp(host, "stop")) { gCtlStop = true; return; }
+  if (gCtlRunning) { Con.println("ctl: already running (`ctl stop`)"); return; }
+  in_addr t;
+  if (!inet_aton(host, &t)) { Con.println("ctl: bad address"); return; }
+  strncpy(gCtl.host, host, sizeof(gCtl.host));
+  gCtl.periodMs = constrain(period, 0, 1000);
+  gCtl.secs = constrain(secs, 1, 600);
+  gCtl.deadlineUs = constrain(deadlineMs, 1, 1000) * 1000;
+  gCtlStop = false;
+  gCtlRunning = true;
+  Con.printf("ctl: %s every %d ms for %d s, deadline %d ms\n", host, gCtl.periodMs, gCtl.secs, deadlineMs);
+  // core 1 at the echo task's priority: the console (loop) keeps parsing `w` lines meanwhile
+  xTaskCreatePinnedToCore(ctlTask, "ctl", 6144, nullptr, 5, &gCtlTask, 1);
+}
+
 static void cmdRtt(const char *host, int count, int size, int intervalMs) {
   count = constrain(count, 1, 1000);
   size = constrain(size, 12, 1472);
@@ -697,6 +853,8 @@ static void help() {
       "blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it (0 = flat out)\n"
       "sink [reset]               what arrived on port 9 here: rate, seq loss/reorder, arrival gaps\n"
       "rtt <ip> [n] [bytes] [ms]  UDP echo round trip in us (default 100 x 64 B, 5 ms apart)\n"
+      "w <steer> <y> <z> <rz> [btn]  latest operator input (the PC's wheel feed; silent)\n"
+      "ctl <ip> [ms] [sec] [dl ms]  16 B control messages to <ip>'s echo: every ms, or 0 = on change\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
@@ -818,6 +976,8 @@ static void handleLine(char *line) {
     gCfg.spiMhz = constrain(atoi(a), 1, 25);
     Con.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
   } else if (!strcmp(cmd, "ping") && n >= 1) cmdPing(a, n >= 2 ? atoi(b) : 5);
+  else if (!strcmp(cmd, "w")) cmdWheel(rest);
+  else if (!strcmp(cmd, "ctl")) cmdCtl(rest);
   else if (!strcmp(cmd, "rtt") && n >= 1) {
     int cnt = 100, size = 64, iv = 5;
     sscanf(rest, "%*s %d %d %d", &cnt, &size, &iv);
@@ -958,5 +1118,5 @@ void loop() {
   else if (plcaOn) on = pst || ((millis() / 125) & 1);
   else on = true;
   digitalWrite(kPinBoardLed, on ? HIGH : LOW);
-  delay(5);
+  delay(1);   // was 5: `w` lines from the PC's wheel feed come at ~1 kHz and their age is measured
 }
