@@ -611,7 +611,7 @@ static void cmdStatus() {
                                                         : "node");
   Con.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz  echo %lu\n", gLinkUp ? "up" : "down",
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, (unsigned long)gEchoCount);
-  if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) bridge::printStats();
+  if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) { bridge::printStats(); bridge::printPhy(); }
   else cmdSink(false);
   if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); bridge::printW5500Rx(); }
   else if (gCfg.mode == kModeNode) bridge::printRx(1, "t1s");

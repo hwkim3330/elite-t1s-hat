@@ -349,6 +349,7 @@ inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
     esp_eth_update_input_path(gPort[s], input, (void *)(uintptr_t)s);
   }
   err = esp_eth_start(tx);
+  gNodeTx = tx;  // so `status` can read this W5500's PHYCFGR too
   Con.printf("bridge: w5500 start: %s -- %s\n", esp_err_to_name(err),
                 sniff ? "sniffing: T1S frames copied out of the W5500, nothing sent on T1S"
                       : "bridging 100BASE-TX <-> 10BASE-T1S");
