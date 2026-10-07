@@ -205,7 +205,7 @@ TRXP/TRXN ─ CMC(L1) ─ C1/C2 100nF ─ [R1/R2 termination] ─ [ESD] ─ CN1
 | R1, R2 | **49.9 Ω 1 % 1206** for an END-OF-BUS node — AN1718 lists **1 W**; the part ordered is **0.75 W** (C4014562), a lab-prototype substitution because no 1 W 1206 was stocked (ORDERING.md). Fit a 1 W part (Susumu HRG3216P, Vishay PHP01206) by hand for anything past the bench.<br>**1.5 kΩ 1 % 1206** for an interior DROP node | footprints fitted, **DNP by default** — stuff per where this node sits on the bus |
 | R3 | 100 kΩ 1 % 0805 + C3 | common-mode termination (drop node), per AN1718's drop-node topology |
 | MOV1/2 | TDK AVRH10C221KT1R5YA8 or Panasonic EZA-EG3W11AV | ESD, optional, footprint by the connector |
-| CN1 | 4-pin 3.81 mm pluggable terminal block | P_in/N_in + P_out/N_out, the two P's and the two N's shorted on board so the node taps a daisy chain |
+| CN1 | 4-pin 2.54 mm push-in spring terminal (KF141R, Rev D) | P_in/N_in + P_out/N_out, the two P's and the two N's shorted on board so the node taps a daisy chain |
 
 **No pin header on the bus.** AN1718 wants ESD and termination in-line with
 stubs minimised; a jumper header on T1S is a stub. Termination is selected by

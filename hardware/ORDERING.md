@@ -56,7 +56,7 @@ Stock = JLC's assembly warehouse, read 2026-10-01 (all 15 lines of the `end/` BO
 | U1 | Microchip LAN8651B1-E/LMX, VQFN-32 5×5 | C22386973 | extended | **199: check first** |
 | Y1 | YXC X322525MOB4SI 25 MHz CL12 3225-4P | C9006 | basic | 167 k |
 | L1 | TDK ACT1210L-201-2P-TL00 CMC | C131444 | extended | 3.5 k |
-| CN1 | Phoenix 1803293 MC 1,5/4-G-3,81 (THT) | C480536 | extended | 2.4 k |
+| CN1 | Kefa KF141R-2.54-4P push-in spring terminal (THT, right angle) | C475126 | extended | 2.6 k |
 | R7 | 12k4 1 % 0603 | C22865 | extended (no basic exists) | 224 k |
 | R1, R2 (`end/`) | Vishay CRCW120649R9FKEAHP 49R9 1 % 1206 0.75 W | C4014562 | extended | 6.2 k |
 | C1–C3 | 100 nF 100 V X7R 0805 | C28233 | basic | |
@@ -89,7 +89,7 @@ engineers apply:
 |---|---|---|
 | J1: 2×20 female socket, 2.54 mm | BOOMELE 2.54-2*20P, LCSC **C5124634** (8.5 mm body, 3.1 mm tail) | **The body goes on the BOTTOM of this board**, facing the riser; solder from the top. This is why it is not in the CPL: a top-side placement would be upside down in the stack. |
 | Riser: 2×20 stacking header (PC104 style) | BOOMELE, LCSC **C35165** (8.3 mm body, 12.3 mm pins) | Plugs onto the Elite's own pins (female side down); its long pins go up into J1. |
-| Bus plug for CN1 | Phoenix 1803594, LCSC **C480512** (low stock, 128), or clone Kefa KF2EDGK-3.81-4P **C440860** | the clone mates with the Phoenix header |
+| Bus wire for CN1 | twisted pair, 20–26 AWG, strip ~6 mm | no plug since Rev D: press the lever, push the wire in |
 | M2.5 standoffs × 4 | length = measured stack height | see below |
 
 **Stack height, calculated, not measured:** riser body 8.3 mm + the ~6 mm of

@@ -15,7 +15,7 @@ Comment,Designator,Footprint,Quantity,Populate,Description,LCSC
 100nF,C7,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.1 uF",C14663
 10nF,C8,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 7) decoupling, 0.01 uF - closest to the pin",C57112
 100nF,C9,Capacitor_SMD:C_0603_1608Metric,1,fit,"VDDP (pin 17) decoupling, 0.1 uF",C14663
-T1S BUS  P N N P,CN1,"Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_P3.81mm_Horizontal",1,fit,"MDI connector, 4-pin 3.81 mm pluggable terminal block. Pins 1..4 = P N N P; the two P and the two N are shorted on board so the node taps a daisy chain.",C480536
+T1S BUS  P N N P,CN1,t1s_hat:TerminalBlock_Kefa_KF141R-2.54-4P,1,fit,"MDI connector, 4-pin 2.54 mm push-in spring terminal (lever). Pins 1..4 = P N N P; the two P and the two N are shorted on board so the node taps a daisy chain.",C475126
 0R (FB opt.),FB1,Inductor_SMD:L_0603_1608Metric,1,fit,VDDA supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D); may be replaced by a ~300 ohm @ 100 MHz bead (e.g. Wuerth 742792640).,C21189
 0R (FB opt.),FB2,Inductor_SMD:L_0603_1608Metric,1,fit,VDDAU supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189
 0R (FB opt.),FB3,Inductor_SMD:L_0603_1608Metric,1,fit,VDDP (pin 7) supply island option: 0 ohm fitted. A real bead needs a local 10 uF after it (DS60001746D).,C21189

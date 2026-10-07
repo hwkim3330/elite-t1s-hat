@@ -18,7 +18,12 @@ the symbol library, the three project-local footprints, the schematic and the
 PCB, then reads the board back and asserts every mechanical feature against
 `GEOMETRY.md`.
 
-**This is Rev C (2026-10-01, review fixes 2026-10-02), 4-layer: the design is
+**This is Rev D (2026-10-07): Rev C with a push-in spring terminal for the bus** -- Kefa KF141R-2.54-4P
+(press the lever, push the wire in) instead of the 3.81 mm pluggable Phoenix header that needed a mating
+plug. Only CN1, its two bus lanes and the P bridge moved; DRC 0, ERC unchanged (0 errors), JLC CPL check
+exact. Rev C is at git tag `rev-c`.
+
+**Rev C (2026-10-01, review fixes 2026-10-02), 4-layer: the design is
 finished and ready to order.** Rev C is Rev B without the status LEDs and with
 VDDA rerouted; an independent review before fabrication then moved the CCOMP,
 VDDAU, VDDA and RBIAS parts and the crystal next to their pins and split U1's
@@ -37,7 +42,7 @@ crossings, JP1, the 3V3 rail) are in git history before commit "Rev B".
   device-tree overlay uses, so their SDK and the mainline `microchip,lan8651`
   driver both work unmodified if this board is ever put on a Pi.
 - **Bus interface network** in AN1718's MINIMAL BIN order: common-mode choke →
-  AC coupling caps → termination → ESD → 4-way 3.81 mm pluggable terminal
+  AC coupling caps → termination → ESD → 4-way 2.54 mm push-in spring terminal (Rev D; Rev C: 3.81 mm pluggable)
   block, wired so the node taps a daisy chain.
 - **4 layers:** signals on top, In1.Cu solid GND, In2.Cu +3V3, bottom only the
   three SPI escapes. The T1S pair is 50 Ω by construction.

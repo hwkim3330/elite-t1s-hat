@@ -44,7 +44,7 @@ crystal oscillation margin, T1S signal quality and EMC, stack height.
   `microchip,lan8651` driver also works on a Pi. Don't press BOOT on a
   running node.
 - **Bus side per AN1718:** common-mode choke → 100 nF DC block → termination
-  (fit per bus position: 49R9 end / 1K5 drop) → optional ESD → 4-pin 3.81 mm
+  (fit per bus position: 49R9 end / 1K5 drop) → optional ESD → 4-pin 2.54 mm push-in (Rev D)
   terminal block, wired P N N P so a node taps a daisy chain.
 - **4 layers (since Rev B):** signals on top, In1 solid GND, In2 +3V3, bottom only three SPI escapes. The T1S pair is 50 Ω by construction (0.35 mm over 0.21 mm of prepreg). Rev A, the 2-layer version, is in git history.
 

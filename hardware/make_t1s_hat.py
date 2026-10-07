@@ -320,14 +320,17 @@ part("MOV2", "Device:Varistor", "220V(1mA) 1.5pF ESD (DNP)", FP_MOV,
      lcsc="C2157827",
      descr="ESD element on bus N, at the connector (AN1718 MOV2) - TDK "
            "AVRH10C221KT1R5YA8 chip varistor, 1005 [0402], 1.5 pF. Optional.")
+# Rev D: a push-in spring terminal (press the lever, push the wire in) instead of the pluggable
+# Phoenix MC header, which needed a mating plug. Kefa KF141R-2.54-4P: right angle, 2.54 mm, two
+# pads per contact, 20-26 AWG -- the T1S pair's usual gauge. Origin = the pad array's centre, so
+# JLC's centroid needs no offset; wire entry (+y in the footprint) faces the board's top edge
+# and the body overhangs it by 3.3 mm. Pins 1 and 2 sit symmetric about x = 29.0, as the pair
+# runs from the QFN, so both legs stay the same length.
 part("CN1", "Connector_Generic:Conn_01x04", "T1S BUS  P N N P",
-     "Connector_Phoenix_MC:PhoenixContact_MC_1,5_4-G-3.81_1x04_"
-     "P3.81mm_Horizontal",
+     "t1s_hat:TerminalBlock_Kefa_KF141R-2.54-4P",
      {1: "BUS_P", 2: "BUS_N", 3: "BUS_N", 4: "BUS_P"},
-     # 0.35 mm in from y = 41: the body outline otherwise lands 0.02 mm from
-     # Edge.Cuts and the silk is clipped at the board edge.
-     (30.405, 40.65, 180), (360.0, 127.0),
-     descr="MDI connector, 4-pin 3.81 mm pluggable terminal block. "
+     (26.46, 44.14, 180), (360.0, 127.0),
+     descr="MDI connector, 4-pin 2.54 mm push-in spring terminal (lever). "
            "Pins 1..4 = P N N P; the two P and the two N are shorted on "
            "board so the node taps a daisy chain.")
 
@@ -455,7 +458,7 @@ LCSC = {
     "R7": "C22865",                       # 12k4 1% 0603, extended (no basic exists)
     "FB1": "C21189", "FB2": "C21189", "FB3": "C21189",  # 0R 0603, basic
     "FB4": "C21189",
-    "CN1": "C480536",                     # Phoenix 1803293 MC 1,5/4-G-3,81
+    "CN1": "C475126",                     # Kefa KF141R-2.54-4P push-in spring terminal (Rev D)
     "R1": "C4014562", "R2": "C4014562",   # DNP option: 49R9 1% 1206 0.75 W
 }
 for _p in P:
@@ -677,11 +680,53 @@ def write_footprint_lib():
         crtyd=(0.85, 0.55))
 
     mods[U1_FP] = u1_footprint()
+    mods["TerminalBlock_Kefa_KF141R-2.54-4P"] = kf141r_footprint()
 
     for name, text in sorted(mods.items()):
         with open(os.path.join(FPDIR, name + ".kicad_mod"), "w") as f:
             f.write(text)
     print("wrote %s (%d footprints)" % (FPDIR, len(mods)))
+
+
+# --- CN1 (Rev D): Kefa KF141R-2.54-4P, push-in spring terminal, right angle. Geometry from
+# LCSC C475126's EasyEDA footprint: 4 contacts at 2.54 mm, each with two 2.1 mm pads (1.4 mm
+# holes) 5.08 mm apart; body 12.7 x 13.8 mm, reaching 4.13 mm past contact 4 and 5.87 mm past
+# the front row (wire entry, +y). Back-row pads are listed last so pad lookups by number land
+# on the row nearer the circuit.
+KF141R_PITCH, KF141R_ROW = 2.54, 5.08
+KF141R_PAD, KF141R_DRILL = 2.10, 1.40
+KF141R_BODY = (-4.76, -5.39, 7.94, 8.41)       # x0, y0, x1, y1 around the pad-array centre
+
+
+def kf141r_footprint():
+    name = "TerminalBlock_Kefa_KF141R-2.54-4P"
+    x0, y0, x1, y1 = KF141R_BODY
+    s = '(footprint "%s" (version 20221018) (generator t1s_hat)\n' % name
+    s += '  (layer "F.Cu")\n'
+    s += ('  (descr "Kefa KF141R-2.54-4P push-in spring terminal block, right angle, 2.54 mm, '
+          '4 contacts x 2 pads (LCSC C475126)")\n  (tags "terminal block spring push-in KF141R")\n')
+    s += '  (attr through_hole)\n'
+    s += ('  (fp_text reference "REF**" (at 0 %.3f) (layer "F.SilkS")\n'
+          '    (effects (font (size 0.8 0.8) (thickness 0.12)))\n  )\n' % (y0 - 0.9))
+    s += ('  (fp_text value "%s" (at 0 %.3f) (layer "F.Fab") hide\n'
+          '    (effects (font (size 0.8 0.8) (thickness 0.12)))\n  )\n' % (name, y1 + 0.9))
+    # silk: the back edge and short side stubs, kept off the pads' mask (the front overhangs the board)
+    ys = -KF141R_ROW / 2 - KF141R_PAD / 2 - 0.25
+    for a, b in (((x0, y0), (x1, y0)), ((x0, y0), (x0, ys)), ((x1, y0), (x1, ys))):
+        s += ('  (fp_line (start %.4f %.4f) (end %.4f %.4f)\n'
+              '    (stroke (width 0.12) (type solid)) (layer "F.SilkS"))\n' % (a[0], a[1], b[0], b[1]))
+    for a, b in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+        for layer, w in (("F.CrtYd", 0.05), ("F.Fab", 0.10)):
+            s += ('  (fp_line (start %.4f %.4f) (end %.4f %.4f)\n'
+                  '    (stroke (width %.2f) (type solid)) (layer "%s"))\n' % (a[0], a[1], b[0], b[1], w, layer))
+    for row in (KF141R_ROW / 2, -KF141R_ROW / 2):          # front row first, back row last
+        for n in range(4):
+            x = -1.5 * KF141R_PITCH + n * KF141R_PITCH
+            shape = "rect" if (n == 0 and row > 0) else "circle"
+            s += ('  (pad "%d" thru_hole %s (at %.4f %.4f) (size %.2f %.2f) (drill %.2f)\n'
+                  '    (layers "*.Cu" "*.Mask"))\n' % (n + 1, shape, x, row, KF141R_PAD, KF141R_PAD, KF141R_DRILL))
+    s += ')\n'
+    return s
 
 
 # --- U1: KiCad's TQFN-32 5x5 (3.4 mm EP, nine 0.2 mm thermal vias) with its
@@ -1053,7 +1098,7 @@ def write_schematic():
     out += '  (uuid %s)\n' % SHEET_UUID
     out += '  (paper "A2")\n'
     out += ('  (title_block\n    (title "T1S HAT - LAN8651 10BASE-T1S")\n'
-            '    (date "")\n    (rev "C")\n'
+            '    (date "")\n    (rev "D")\n'
             '    (company "")\n'
             '    (comment 1 "Generated by make_t1s_hat.py from ELECTRICAL.md")\n'
             '  )\n')
@@ -1529,19 +1574,25 @@ def build_routes():
     # stop at the near half of the MOV's BUS pad instead of its centre, so
     # the stub's end keeps the rule from the MOV's own GND pad 0.40 mm away.
     R(("BUS_P", WT, [("C1", "2"), (29.50, 32.65), (33.46, 32.65),
-                     (33.46, 38.40), (30.405, 38.40), ("CN1", "1")]))
+                     (33.46, 38.40), (PADPOS[("CN1", "1")][0], 38.40), ("CN1", "1")]))
     R(("BUS_N", WT, [("C2", "2"), (27.50, 32.65), (23.54, 32.65),
-                     (23.54, 38.40), (26.595, 38.40), ("CN1", "2")]))
+                     (23.54, 38.40), (PADPOS[("CN1", "2")][0], 38.40), ("CN1", "2")]))
     R(("BUS_P", WT, [(33.46, 37.00), (PADPOS[("MOV1", "1")][0] - 0.10, 37.00)]))
     R(("BUS_N", WT, [(23.54, 37.00), (PADPOS[("MOV2", "1")][0] + 0.10, 37.00)]))
     R(("BUS_CT", WS, [("R2", "2"), ("R1", "2")]))
     R(("BUS_CT", WS, [(28.50, 34.20), (28.50, 37.00)]))
     R(("BUS_CT", WS, [("C3", "1"), (28.50, 37.00), ("R3", "1")]))
-    # CN1 is P N N P: the N pair is adjacent, the P pair is bridged under the
-    # connector body, where nothing else runs.
+    # CN1 is P N N P: the N pair is adjacent (back row), the P pair is bridged under the
+    # connector body between its two pad rows, where nothing else runs.
+    _mid = (PADPOS[("CN1", "1")][1] + PADPOS[("CN1", "4")][1]) / 2 + KF141R_ROW / 2
     R(("BUS_N", WT, [("CN1", "2"), ("CN1", "3")]))
-    R(("BUS_P", WT, [("CN1", "1"), (30.405, 44.00), (18.975, 44.00),
+    R(("BUS_P", WT, [("CN1", "1"), (PADPOS[("CN1", "1")][0], _mid), (PADPOS[("CN1", "4")][0], _mid),
                      ("CN1", "4")]))
+    # each contact's two pads (front and back row) are one spring inside the part; tie them in
+    # copper too, on B.Cu, crossing under the P bridge
+    for _n, _net in (("1", "BUS_P"), ("2", "BUS_N"), ("3", "BUS_N"), ("4", "BUS_P")):
+        _x, _y = PADPOS[("CN1", _n)]
+        R((_net, WT, [(_x, _y), (_x, _y + KF141R_ROW)], pcbnew.B_Cu))
 
     # ================= QFN top edge, right-hand group =====================
     # Rev C review fixes.  Rev C as first drawn ran VDDAU, RBIAS, XTI and XTO
@@ -1826,7 +1877,7 @@ def draw_silk(board):
         x, y = pin_xy(pin)
         add_text(board, txt, x, y - 2.10, h=0.8, w=0.62, th=0.13)
 
-    add_text(board, "REV C", 51.5, 24.5, h=1.0, w=0.8, th=0.15, just="left")
+    add_text(board, "REV D", 51.5, 24.5, h=1.0, w=0.8, th=0.15, just="left")
 
     # back side: which way up
     add_text(board, "T-ETH-ELITE SIDE", 33.0, 25.0, h=2.0, th=0.32,
