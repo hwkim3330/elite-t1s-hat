@@ -748,8 +748,35 @@ static const uint8_t *udpOf(const uint8_t *f, uint32_t len, uint16_t &sport, uin
   dport = (u[2] << 8) | u[3];
   return u + 8;
 }
+// gPTP slave (`ptp gm`): an 802.1AS grandmaster's two-step Sync, here a Microchip LAN9360. t2 is the
+// Sync's ingress stamp from this chip; t1 the preciseOriginTimestamp (+ correction) of its Follow_Up.
+struct GmPair { volatile uint16_t s2, s1; volatile int64_t t2, t1; };
+static GmPair gGm[16];
+static volatile uint32_t gGmSyncs = 0, gGmFus = 0;
+static void onGptp(const uint8_t *h, uint32_t len, uint64_t ts) {
+  if (len < 44) return;
+  const uint8_t mt = h[0] & 0x0F;
+  const uint16_t seq = (h[30] << 8) | h[31];
+  GmPair &g = gGm[seq & 15];
+  if (mt == 0x0) {                               // Sync: our ingress stamp
+    g.t2 = tsToNs(ts);
+    g.s2 = seq;
+    gGmSyncs = gGmSyncs + 1;
+  } else if (mt == 0x8 && len >= 44) {           // Follow_Up: the master's egress time
+    uint64_t sec = 0;
+    for (int i = 34; i < 40; i++) sec = (sec << 8) | h[i];
+    const uint32_t ns = ((uint32_t)h[40] << 24) | (h[41] << 16) | (h[42] << 8) | h[43];
+    int64_t corr = 0;
+    for (int i = 8; i < 16; i++) corr = (corr << 8) | h[i];
+    g.t1 = (int64_t)sec * 1000000000LL + ns + (corr >> 16);
+    g.s1 = seq;
+    gGmFus = gGmFus + 1;
+  }
+}
+
 static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
   gPtpAnyRts = gPtpAnyRts + 1;
+  if (len > 14 + 34 && f[12] == 0x88 && f[13] == 0xF7) { onGptp(f + 14, len - 14, ts); return; }
   uint16_t sp, dp;
   const uint8_t *p = udpOf(f, len, sp, dp);
   if (!p || (dp != 5007 && sp != 5007)) return;
@@ -983,6 +1010,73 @@ static void cmdTele(const char *a) {
   gTeleMs = (uint16_t)constrain(ms > 0 ? ms : 200, 50, 5000);
   if (!started) started = xTaskCreate(teleTask, "tele", 4096, nullptr, 1, nullptr) == pdPASS;
   Con.printf("tele: every %u ms\n", (unsigned)gTeleMs);
+}
+
+// One update a second from that second's Sync/Follow_Up pairs (8 at the automotive profile's 125 ms):
+// the median offset steers the TSU through the same PI as `ptp lock`. No path delay yet (the LAN9360
+// answers Pdelay; not used): the offset carries the constant link latency, sigma does not.
+static volatile bool gGmRun = false;
+static int gGmSecs = 60;
+static double gGmKp = 0.2, gGmKi = 0.02;
+static void gmTask(void *) {
+  const double kp = gGmKp, ki = gGmKi;
+  double integ = 0, freq = 0;
+  bool stepped = false;
+  uint16_t lastSeq = 0;
+  bool haveLast = false;
+  tsuFreq(0);
+  Con.printf("ptpg: following the gPTP grandmaster for %d s (kp %.2f ki %.3f)\n", gGmSecs, kp, ki);
+  for (int sec = 0; sec < gGmSecs && gGmRun; sec++) {
+    delay(1000);
+    int64_t offs[16];
+    int n = 0;
+    for (auto &g : gGm) {
+      const uint16_t s2 = g.s2;
+      if (s2 != g.s1 || !g.t2 || !g.t1) continue;
+      if (haveLast && (int16_t)(s2 - lastSeq) <= 0) continue;   // used last second
+      offs[n++] = g.t1 - g.t2;                                    // master - node
+    }
+    for (auto &g : gGm) if ((!haveLast || (int16_t)(g.s2 - lastSeq) > 0) && g.s2 == g.s1) { lastSeq = g.s2; haveLast = true; }
+    if (!n) { Con.printf("ptpg: %d s no Sync/Follow_Up pairs (syncs %lu, follow-ups %lu)\n", sec, (unsigned long)gGmSyncs, (unsigned long)gGmFus); continue; }
+    std::sort(offs, offs + n);
+    const int64_t off = offs[n / 2];
+    if (!stepped || off > 1000000000LL || off < -1000000000LL) {
+      tsuStep(off);
+      stepped = true;
+      Con.printf("ptpg: %d step %lld ns\n", sec, (long long)off);
+      for (auto &g : gGm) g.t1 = g.t2 = 0;                        // pairs from before the step are stale
+      continue;
+    }
+    integ += ki * off;
+    freq = kp * off + integ;
+    if (freq > 200000) freq = 200000;
+    if (freq < -200000) freq = -200000;
+    tsuFreq(freq);
+    gLockOffNs = off;
+    Con.printf("ptpg: %d offset %lld ns spread %lld ns freq %+.0f ppb (%d/8)\n", sec, (long long)off,
+               (long long)(offs[n - 1] - offs[0]), freq, n);
+  }
+  Con.printf("ptpg: done, holding %+.0f ppb\n", freq);
+  gGmRun = false;
+  vTaskDelete(nullptr);
+}
+
+static void cmdPtpGm(const char *rest) {
+  char w[8] = "";
+  int secs = 60;
+  float kp = 0.2f, ki = 0.02f;
+  sscanf(rest, "%*s %7s", w);
+  if (!strcmp(w, "stop")) { gGmRun = false; return; }
+  sscanf(rest, "%*s %d %f %f", &secs, &kp, &ki);
+  if (gGmRun || gLockRun) { Con.println("ptpg: a lock is already running (`ptp gm stop` / `ptp stop`)"); return; }
+  if (!gPtpOn) cmdPtp("on");
+  // the grandmaster sends to 01:80:C2:00:00:0E; the MAC filter would drop it
+  bool on = true;
+  esp_eth_ioctl(gEth, ETH_CMD_S_PROMISCUOUS, &on);
+  gGmSecs = constrain(secs, 5, 3600);
+  gGmKp = kp; gGmKi = ki;
+  gGmRun = true;
+  xTaskCreate(gmTask, "ptp_gm", 4096, nullptr, 6, nullptr);
 }
 
 static void lockTask(void *) {
@@ -1406,6 +1500,7 @@ static void help() {
       "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange): offset, delay; + hardware if the peer runs ptp on\n"
       "ptp [on|off]               LAN8651 hardware frame stamps (TSU wall clock) for the sync exchange\n"
       "ptp lock <ip> [sec] [kp] [ki] | stop  discipline the LAN8651 clock to <ip>'s (PI, 1 s updates)\n"
+      "ptp gm [sec] [kp] [ki] | stop      follow an 802.1AS grandmaster on the bus (two-step Sync/Follow_Up)\n"
       "ptp pps on | off | status  1PPS on DIOA4 (HAT Rev D: TP1, header 13 / IO40); `force` on other boards\n"
       "ptp pps eg0 force          1 Hz, 100 ms on DIOA0 from event generator 0 (no HAT routes DIOA0)\n"
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
@@ -1538,6 +1633,7 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "evt")) cmdEvt(rest);
   else if (!strcmp(cmd, "sync")) cmdSync(rest);
   else if (!strcmp(cmd, "ptp") && !strcmp(a, "lock")) cmdPtpLock(rest);
+  else if (!strcmp(cmd, "ptp") && !strcmp(a, "gm")) cmdPtpGm(rest);
   else if (!strcmp(cmd, "ptp") && !strcmp(a, "stop")) gLockRun = false;
   else if (!strcmp(cmd, "ptp") && !strcmp(a, "pps")) cmdPps(rest);
   else if (!strcmp(cmd, "ptp")) cmdPtp(a);

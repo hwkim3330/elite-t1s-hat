@@ -363,6 +363,12 @@ BLE and WiFi both up the node had 33 KB internal RAM left and Zenoh pongs mostly
 with WiFi off, 86–96 KB free and **Zenoh RTT 4.6–4.9 ms, half of the 9 ms measured with WiFi on**.
 OTA needs WiFi; flash over USB.
 
+**`ptp gm`: following an 802.1AS grandmaster (2026-10-07).** The LAN8651 timestamps the grandmaster's
+Sync on ingress; the Follow_Up carries t1. On a Microchip LAN9360 grandmaster (automotive profile, 8 Sync/s)
+the HAT's clock held **σ 39 ns** (mean −8 ns, worst 73 ns) after 60 s — hardware stamps on both ends,
+versus 6.6–10.6 µs against the software-stamping W5500 board. The MAC is set promiscuous (the Sync goes to
+01:80:C2:00:00:0E); no path delay yet. Data: `esp32-t1s-bridge/docs/t1s_results/gptp_lan9360`.
+
 **Zenoh and the servo (2026-10-07).** Zenoh's 5 Hz ping shares the bus with the exchanges: paired
 60 s runs gave σ 32.7 µs with it, 19.2 µs with `zenoh pause` on both boards (3 of 3 pairs,
 `esp32-t1s-bridge/docs/t1s_results/ptp_wifi`). Pause it for a measurement; the tablet app does.
