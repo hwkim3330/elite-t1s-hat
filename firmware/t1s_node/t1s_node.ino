@@ -25,6 +25,7 @@
 #include "src/lan865x/esp_eth_mac_lan865x.h"
 #include "src/lan865x/esp_eth_phy_lan865x.h"
 #include "bridge.h"
+#include "zone.h"
 #include "zenoh_t1s.h"
 #include "net_console.h"
 
@@ -791,7 +792,8 @@ static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
 // Software stamp at the driver (any board, W5500 or LAN8651): taken when the frame comes off SPI, so it
 // skips lwIP and the socket task's wake-up. The answerer uses it as t2 when it has no hardware stamp.
 static HwStamp gDrvRx[64];
-static void onDrvRx(esp_eth_handle_t, const uint8_t *f, uint32_t len) {
+static void onDrvRx(esp_eth_handle_t h, const uint8_t *f, uint32_t len) {
+  zone::rx(h, f, len);
   uint16_t sp, dp;
   const uint8_t *p = udpOf(f, len, sp, dp);
   if (!p || dp != 5007) return;
@@ -1532,6 +1534,7 @@ static void handleLine(char *line) {
   if (netConsoleCommand(cmd, a, b, n)) return;
   if (!strcmp(cmd, "status")) cmdStatus();
   else if (!strcmp(cmd, "zenoh")) zenohT1sCommand(rest);
+  else if (!strcmp(cmd, "zone")) zone::command(rest);
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "phyreset")) bridge::phyReset();
@@ -1734,6 +1737,7 @@ void setup() {
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
     bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
+    zone::begin(gEth);   // zone controller groundwork (idle until `zone ip ...`)
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
     zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
