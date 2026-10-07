@@ -57,7 +57,8 @@ though the shop listing says LAN8650).
 | DNC (6, 15) | "must be left floating externally" | no connect, no copper stub |
 | WAKE_IN (32) | "When not used, this pin should be connected to VSS." | to GND (VDDAU domain) |
 | WAKE_OUT (24) | "When not used, this pin should be left unconnected." | NC |
-| DIOA0-4, DIOB0 | "When not used, these pins may be connected directly to ground." | all to GND (Rev C: no LEDs; the LAN8651 has no LED function) |
+| DIOA0-3, DIOB0 | "When not used, these pins may be connected directly to ground." | to GND (Rev C: no LEDs; the LAN8651 has no LED function) |
+| DIOA4 (23) | dedicated 1PPS output (PPSCTL, MMS10 0x239; PADCTRL A4SEL) | **Rev D: to TP1 and header 13 (IO40)** — the 1588 clock on a scope |
 | RESET_N (8) | "When not used, this pin must be connected directly to VDDP." | driven from the host **plus** a 10 k pull-up to 3V3, so a floating GPIO during ESP32 boot cannot hold the PHY in reset |
 | RBIAS (26) | "requires connection of a 12.4 kΩ resistor to ground… within ±1% across the entire expected operating temperature range" | **12.4 kΩ 1 %**, no substitutions |
 
@@ -163,7 +164,8 @@ put on a Pi, and costs nothing on the ESP32 side.
 | SDI (13) | 19 | GPIO10 / SPI0 MOSI | **IO11** SPI_MOSI (shared with the TF card) |
 | SDO (10) | 21 | GPIO9 / SPI0 MISO | **IO9** SPI_MISO (shared with the TF card) |
 | SCLK (12) | 23 | GPIO11 / SPI0 SCLK | **IO10** SPI_SCLK (shared with the TF card) |
-| CS_N (11) | 24 | GPIO8 / SPI0 CE0 | **IO0 = BOOT strap** — see below; 10 k pull-up to 3V3 |
+| CS_N (11) | **27** (Rev C: 24) | GPIO0 / ID_SD (Rev C: GPIO8 / CE0) | **IO8** (Rev C: IO0 = BOOT strap, see below); 10 k pull-up to 3V3 |
+| DIOA4 / 1PPS (23) | 13 | GPIO27 | **IO40** (Rev D) and TP1 |
 | IRQ_N (9) | 16 | GPIO23 | **IO39**; 10 k pull-up to 3V3 |
 | RESET_N (8) | 15 | GPIO22 | **IO42**; 10 k pull-up to 3V3 |
 
@@ -174,7 +176,9 @@ in `Xinyuan-LilyGO/LilyGO-T-ETH-Series`, sheet 2, connector J1), and it is
 mirrored in [`firmware/t1s_node/pins.h`](../firmware/t1s_node/pins.h). Two
 consequences of it:
 
-- **CS_N lands on IO0, the ESP32-S3's BOOT strap.** That is where a Pi puts
+- **Rev C: CS_N lands on IO0, the ESP32-S3's BOOT strap; Rev D moves it to IO8 (header 27).**
+  On a Pi, Rev D's CS is GPIO0 (ID_SD, the HAT EEPROM bus), so a Pi needs a
+  `cs-gpios` override; the ESP32 is the target. Rev C, for the record: that is where a Pi puts
   CE0 and it works: the strap wants IO0 high at reset, both the Elite (its R1)
   and this board (R5) pull it up, and CS_N is an input on the LAN8651, so
   nothing here can drag it low. But pressing the Elite's BOOT button on a
@@ -216,7 +220,8 @@ which resistors get stuffed, marked on silkscreen, not by a removable jumper.
 The LAN8651 has **no LED function**: PADCTRL (0x88) A0SEL/A1SEL select only event
 capture (input) or event generator (output) for DIOA0/1 (DS60001734F §11.6.3). Rev B
 put LEDs on them that firmware could never have driven with PLCA state; Rev C ties
-**DIOA0…4 and DIOB0/1 to ground**, as the data sheet allows for unused pins.
+**DIOA0…4 and DIOB0/1 to ground**, as the data sheet allows for unused pins. Rev D takes
+DIOA4 back out: it is the dedicated 1PPS pin, now on TP1 and header 13 (IO40).
 
 Status is shown on the **Elite's own LED (IO38)** by firmware, from PLCA_STS.PST
 (MMS 4, 0xCA03): solid = beacons seen (or link up under CSMA/CD), fast blink = PLCA

@@ -10,6 +10,8 @@
 //   SDO  (MISO)     21           GPIO9  MISO      IO9   SPI_MISO  (shared with the TF card)
 //   SCLK            23           GPIO11 SCLK      IO10  SPI_SCLK  (shared with the TF card)
 //   CS_N            24           GPIO8  CE0       IO0   BOOT      <-- strapping pin, see below
+//   CS_N (Rev D)    27           GPIO0  ID_SD     IO8             moved off the strap
+//   1PPS (Rev D)    13           GPIO27           IO40            LAN8651 DIOA4, also test pad TP1
 //   IRQ_N           16           GPIO23           IO39
 //   RESET_N         15           GPIO22           IO42
 //
@@ -23,6 +25,10 @@
 //   - holding BOOT at power-up still enters the ROM downloader as usual. Flashing is
 //     unaffected.
 //
+// Rev D of this HAT moved CS_N to header 27 (IO8) and brings the LAN8651's dedicated 1PPS
+// (DIOA4) to header 13 (IO40). The firmware reads DEVID on each CS candidate at boot, so
+// one image runs on either board, and it knows from that which board it is on.
+//
 // The three bus pins are the Elite's general SPI, which also runs the TF card slot
 // (CS IO12). The card is deselected at boot (kPinSdCs driven high) so it cannot answer
 // on the LAN8651's transactions; using the card at the same time would need a shared
@@ -34,7 +40,9 @@
 constexpr int kPinT1sMosi = 11;
 constexpr int kPinT1sMiso = 9;
 constexpr int kPinT1sSclk = 10;
-constexpr int kPinT1sCs = 0;
+constexpr int kPinT1sCs = 0;      // Rev C / TSN Lab HAT
+constexpr int kPinT1sCsRevD = 8;  // Rev D
+constexpr int kPinT1sPps = 40;    // Rev D: DIOA4 1PPS in
 constexpr int kPinT1sIrq = 39;
 constexpr int kPinT1sReset = 42;
 

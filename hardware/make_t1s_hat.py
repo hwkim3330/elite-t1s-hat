@@ -202,8 +202,11 @@ for _p in HDR_GND:
     HDR_NET[_p] = "GND"
 for _p in HDR_3V3:
     HDR_NET[_p] = "+3V3"
+# Rev D: CS_N on header 27 (Elite IO8), not 24 (IO0 = the ESP32-S3's BOOT strap, where pressing
+# BOOT on a running node corrupted SPI); PPS from the LAN8651's DIOA4 on header 13 (IO40), so the
+# ESP32 can see the chip's whole seconds. A Pi would want CE0 on 24: Pi use now needs a bodge wire.
 HDR_NET.update({15: "RESET_N", 16: "IRQ_N", 19: "SPI_MOSI",
-                21: "SPI_MISO", 23: "SPI_SCLK", 24: "SPI_CS_N"})
+                21: "SPI_MISO", 23: "SPI_SCLK", 27: "SPI_CS_N", 13: "PPS"})
 
 # LAN8651 pin -> net; None => no-connect (no copper stub either).
 U1_NET = {
@@ -224,7 +227,8 @@ U1_NET = {
     # LAN8651 has no LED function (DS60001734F 11.6.3), so firmware could never
     # have shown PLCA state there.  Status goes to the Elite's own LED (IO38).
     18: "GND", 19: "GND",
-    20: "GND", 22: "GND", 23: "GND",   # DIOA2/3/4 unused -> ground
+    20: "GND", 22: "GND",   # DIOA2/3 unused -> ground
+    23: "PPS",              # Rev D: DIOA4, the LAN8651's dedicated 1PPS output (PADCTRL A4SEL)
     21: "CCOMP",
     24: None,           # WAKE_OUT "should be left unconnected"
     25: "VDDAU", 26: "RBIAS", 27: "XTI", 28: "XTO", 29: "VDDA",
@@ -333,6 +337,12 @@ part("CN1", "Connector_Generic:Conn_01x04", "T1S BUS  P N N P",
      descr="MDI connector, 4-pin 2.54 mm push-in spring terminal (lever). "
            "Pins 1..4 = P N N P; the two P and the two N are shorted on "
            "board so the node taps a daisy chain.")
+
+# --- Rev D: PPS test pad (bare copper, no part fitted) ----------------------------------
+part("TP1", "Connector:TestPoint", "PPS",
+     "TestPoint:TestPoint_Pad_D1.5mm",
+     {1: "PPS"}, (40.0, 12.0, 0), (254.0, 175.26),
+     descr="PPS from the LAN8651 (DIOA4): a scope probe point, also on header 13 (IO40)")
 
 # --- clock -----------------------------------------------------------------
 # 3225 4-pad, not the 3215 2-pad this board first had: no 25 MHz crystal is
@@ -1083,8 +1093,8 @@ def write_schematic():
     sch_text(120, 228, "CLOCK  25.000 MHz, CL 12 pF (18 pF caps).  No series and no "
                        "feedback resistor: the device has ~1 Mohm internally "
                        "across the amplifier.", 1.8, "g4")
-    sch_text(255, 228, "DIOA0..4 and DIOB0/DIOB1 to ground: the LAN8651 has "
-                       "no LED function.  Status: the Elite's own LED (IO38).",
+    sch_text(255, 228, "DIOA0..3 and DIOB0/DIOB1 to ground (no LED function; "
+                       "status on the Elite's LED, IO38).  DIOA4 = 1PPS to TP1 and IO40.",
              1.8, "g5")
     sch_text(30, 248, "PWR_FLAG: these rails are fed through passive pins "
                       "(header pads, 0R beads), so ERC is told where the "
@@ -1594,6 +1604,16 @@ def build_routes():
         _x, _y = PADPOS[("CN1", _n)]
         R((_net, WT, [(_x, _y), (_x, _y + KF141R_ROW)], pcbnew.B_Cu))
 
+    # ================= PPS (Rev D): DIOA4 -> TP1 -> header 13 =====================
+    # F.Cu is full on that side (C5/C4, and VDDAU runs right past pin 24), so pin 23 drops through
+    # a via just past its pad end and runs on B.Cu, which is empty there but for a few vias: down
+    # x 33.1, right along y 12 to TP1 (a via up to the bare test pad), then to header 13.
+    R(("PPS", WS, [("U1", "23"), (33.10, 21.25)]))
+    G(("PPS", 33.10, 21.25, 0.45, 0.25))
+    R(("PPS", WS, [(33.10, 21.25), (33.10, 12.00), (40.00, 12.00)], pcbnew.B_Cu))
+    G(("PPS", 40.00, 12.00, 0.45, 0.25))
+    R(("PPS", WS, [(40.00, 12.00), (41.216, 10.50), ("J1", "13")], pcbnew.B_Cu))
+
     # ================= QFN top edge, right-hand group =====================
     # Rev C review fixes.  Rev C as first drawn ran VDDAU, RBIAS, XTI and XTO
     # out in four parallel 0.15 mm lanes 0.35 mm apart for ~9 mm, with C13/C14
@@ -1643,12 +1663,12 @@ def build_routes():
     R(("VDDP_17", WF, [("C10", "1"), ("C9", "1"), ("FB4", "2")]))
     R(("+3V3", WF, [("FB4", "1"), (36.30, 14.10)]))
     G(("+3V3", 36.30, 14.10, 0.45, 0.25))
-    # DIOA0..4 (18, 19, 20, 22, 23) are unused and go to ground (data sheet).
+    # DIOA0..3 (18, 19, 20, 22) are unused and go to ground (data sheet); DIOA4 (23) is PPS since Rev D.
     # Rev C review fix: they tie INWARD to the exposed pad, like pins 2/3/5, so
     # the right edge is free for CCOMP: C5 (100 nF) 1.4 mm from pin 21, C4
     # (4.7 uF) beside it, each with its own ground via.
     for pin, y in (("18", 18.75), ("19", 19.25), ("20", 19.75),
-                   ("22", 20.75), ("23", 21.25)):
+                   ("22", 20.75)):
         R(("GND", WQ, [("U1", pin), (31.55, y)]))
     R(("CCOMP", WF, [("U1", "21"), ("C5", "1")]))
     R(("CCOMP", 0.40, [("C5", "1"), ("C4", "1")]))
@@ -1676,9 +1696,11 @@ def build_routes():
     # --- F.Cu
     R(("SPI_CS_N", WQ, [("U1", "11"), (29.25, 12.00), (27.246, 10.00),
                         ("R5", "2")]))
-    R(("SPI_CS_N", WS, [("R5", "2"), (27.246, 4.63), ("J1", "24")]))
-    R(("+3V3", WS, [("R5", "1"), (25.595, 7.60)]))
-    G(("+3V3", 25.595, 7.60, 0.45, 0.25))
+    # Rev D: to header 27 (IO8): down from R5, under the +3V3 via and over J1-25's pad, then left
+    R(("SPI_CS_N", WS, [("R5", "2"), (27.246, 7.10), (24.20, 7.10), ("J1", "27")]))
+    # Rev D: R5's +3V3 via moved left of its pad, off the path CS_N now takes to header 27
+    R(("+3V3", WS, [("R5", "1"), (24.70, 8.80)]))
+    G(("+3V3", 24.70, 8.80, 0.45, 0.25))
     R(("SPI_SCLK", WQ, [("U1", "12"), (29.75, 8.00), (28.516, 7.00),
                         ("J1", "23")]))
     R(("SPI_MOSI", WQ, [("U1", "13"), (30.25, 9.00), (33.596, 7.00),
@@ -1870,10 +1892,12 @@ def draw_silk(board):
     # J1 (pins 15-24), reachable from the top once the socket is soldered.
     # Labelling them is the test-point set the LAN8650/1 checklist asks for,
     # without new copper on a signal path.
-    for pin, txt in ((15, "RST"), (17, "3V3"), (19, "MOSI"), (21, "MISO"), (23, "SCK")):
+    # Rev D: CS moved off pin 24 (IO0, the BOOT strap) to pin 27 (IO8); PPS (DIOA4) on pin 13 (IO40).
+    for pin, txt in ((13, "PPS"), (15, "RST"), (17, "3V3"), (19, "MOSI"), (21, "MISO"), (23, "SCK"),
+                     (27, "CS")):
         x, y = pin_xy(pin)
         add_text(board, txt, x, y + 2.10, h=0.8, w=0.62, th=0.13)   # clear of J1's outline (+1.33)
-    for pin, txt in ((16, "IRQ"), (20, "GND"), (24, "CS")):
+    for pin, txt in ((16, "IRQ"), (20, "GND")):
         x, y = pin_xy(pin)
         add_text(board, txt, x, y - 2.10, h=0.8, w=0.62, th=0.13)
 
@@ -2378,7 +2402,7 @@ def write_bom():
 # Hand-soldered, so kept out of the JLCPCB assembly files: J1's body goes on the
 # BOTTOM of this board (facing the riser) and a top-side CPL entry would get it
 # fitted the wrong way up.  DNP parts are left out for the same reason.
-JLC_EXCLUDE = {"J1"}
+JLC_EXCLUDE = {"J1", "TP1"}   # J1 is hand-fitted; TP1 is bare copper
 
 
 def write_jlc():

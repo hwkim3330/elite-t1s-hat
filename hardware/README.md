@@ -20,8 +20,17 @@ PCB, then reads the board back and asserts every mechanical feature against
 
 **This is Rev D (2026-10-07): Rev C with a push-in spring terminal for the bus** -- Kefa KF141R-2.54-4P
 (press the lever, push the wire in) instead of the 3.81 mm pluggable Phoenix header that needed a mating
-plug. Only CN1, its two bus lanes and the P bridge moved; DRC 0, ERC unchanged (0 errors), JLC CPL check
-exact. Rev C is at git tag `rev-c`.
+plug. Two review bugs fixed with it:
+
+| Rev C | Rev D | why |
+|---|---|---|
+| CS_N on header 24 = **IO0, the ESP32-S3's BOOT strap** | CS_N on header **27 = IO8** (free on the Elite); R5 pull-up kept | pressing BOOT on a live node asserted CS mid-transaction; any glitch on the strap at reset could also start the ROM loader |
+| DIOA0…4 all to ground | **DIOA4 (pin 23) = 1PPS** to test pad **TP1** and header **13 = IO40**; DIOA0…3 still to ground | the LAN8651 has a dedicated 1PPS output on DIOA4 (PPSCTL); with DIOA grounded there was no way to see the 1588 clock on a scope, so PTP accuracy could not be measured, only precision |
+
+PPS leaves pin 23 through a via just past its pad (F.Cu there is C4/C5 and the VDDAU lane) and runs on
+B.Cu, which is empty in that area, to TP1 and the header. R5's +3V3 via moved 1 mm left to make room for
+CS. DRC 0, ERC 0 errors (6 warnings, was 7: DIOA4 is no longer tied to ground), JLC CPL check exact.
+Rev C is at git tag `rev-c`.
 
 **Rev C (2026-10-01, review fixes 2026-10-02), 4-layer: the design is
 finished and ready to order.** Rev C is Rev B without the status LEDs and with
@@ -118,7 +127,7 @@ The rules the layout was held to, each checked by the generator or DRC:
   enter the header between pad columns, never across one of the Elite's
   pins that this board does not use.
 - **The pull-ups cost no vias of their own:** R4 and R6 sit in-line on their
-  F.Cu signal, and R5 lands on header pin 24's through-hole pad.
+  F.Cu signal, and R5 sits on the CS lane to header pin 27 (pin 24 before Rev D).
 
 ## Two decisions that are not in ELECTRICAL.md / GEOMETRY.md
 
@@ -234,11 +243,11 @@ through the real eeschema on an Xvfb display by
 before the run. Report as produced: [`erc.rpt`](erc.rpt).
 
 ```
-** ERC messages: 7  Errors 0  Warnings 7
+** ERC messages: 6  Errors 0  Warnings 6
 ```
 
-All 7 warnings are the same thing: *"Pins of type Bidirectional and Power
-output are connected"* on U1 pins 18, 19, 20, 22, 23 (DIOA0…4) and 16, 14
+All 6 warnings are the same thing: *"Pins of type Bidirectional and Power
+output are connected"* on U1 pins 18, 19, 20, 22 (DIOA0…3) and 16, 14
 (DIOB0/DIOB1). Those are the unused configurable IO tied to ground, which is
 exactly what the data sheet says to do — *"When not used, these pins may be
 connected directly to ground."* Nothing is excluded or suppressed.

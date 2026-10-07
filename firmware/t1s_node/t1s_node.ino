@@ -80,6 +80,8 @@ static esp_netif_t *gLan = nullptr;   // mode node: the W5500 next to T1S
 static volatile bool gLanUp = false;
 static volatile bool gLinkUp = false;
 static uint8_t gSpiMhzRunning = 0;   // the clock bring-up actually settled on
+static int gPinCs = kPinT1sCs;       // CS_N as found at boot: IO0 (Rev C / TSN Lab HAT) or IO8 (Rev D)
+static bool hatRevD() { return gPinCs == kPinT1sCsRevD; }
 static float gSpiActualMhz = 0;      // what the SPI peripheral really runs: 80 MHz / an integer divider
 static volatile uint32_t gEchoCount = 0;
 // port 9 (discard) sink: what a peer's `blast` actually delivered here
@@ -171,7 +173,7 @@ static void printPlca() {
 // and example code agree on MOSI=IO11 / MISO=IO9, but their printed pinout image had IO9/IO11
 // swapped (LilyGO-T-ETH-Series issue #100) -- so the firmware checks instead of trusting either.
 // Frame: 4-byte header + 4 data + 4 dummy out; 4 dummy + echoed header + register back.
-static uint32_t tc6RawReadDevid(int mosi, int miso) {
+static uint32_t tc6RawReadDevid(int mosi, int miso, int cs) {
   spi_bus_config_t bus = {};
   bus.mosi_io_num = mosi;
   bus.miso_io_num = miso;
@@ -182,7 +184,7 @@ static uint32_t tc6RawReadDevid(int mosi, int miso) {
   spi_device_interface_config_t dev = {};
   dev.mode = 0;
   dev.clock_speed_hz = 4 * 1000 * 1000;  // slow on purpose: this is a wiring test
-  dev.spics_io_num = kPinT1sCs;
+  dev.spics_io_num = cs;
   dev.queue_size = 1;
   spi_device_handle_t h = nullptr;
   uint32_t devid = 0;
@@ -227,19 +229,30 @@ static bool t1sStart(bool withNetif) {
   esp_event_loop_create_default();
   gpio_install_isr_service(0);  // the LAN865x driver is interrupt-driven
 
+  // Which CS: IO0 (Rev C, TSN Lab's HAT) or IO8 (Rev D). A CS that reaches no chip reads 0 or
+  // all ones, so the first candidate that returns a LAN865x DEVID is the board's.
   int mosi = kPinT1sMosi, miso = kPinT1sMiso;
-  uint32_t probed = tc6RawReadDevid(mosi, miso);
+  uint32_t probed = 0;
+  for (int cs : {kPinT1sCs, kPinT1sCsRevD}) {
+    probed = tc6RawReadDevid(mosi, miso, cs);
+    if (isLan865x(probed)) { gPinCs = cs; break; }
+  }
   if (!isLan865x(probed)) {
-    const uint32_t swapped = tc6RawReadDevid(miso, mosi);
-    Con.printf("t1s: probe MOSI=IO%d MISO=IO%d -> 0x%08lx, swapped -> 0x%08lx\n", mosi, miso,
-                  (unsigned long)probed, (unsigned long)swapped);
+    uint32_t swapped = 0;
+    for (int cs : {kPinT1sCs, kPinT1sCsRevD}) {
+      swapped = tc6RawReadDevid(miso, mosi, cs);
+      if (isLan865x(swapped)) { gPinCs = cs; break; }
+    }
+    Con.printf("t1s: probe MOSI=IO%d MISO=IO%d -> 0x%08lx, swapped -> 0x%08lx (CS IO%d)\n", mosi, miso,
+                  (unsigned long)probed, (unsigned long)swapped, gPinCs);
     if (isLan865x(swapped)) {
       mosi = kPinT1sMiso;
       miso = kPinT1sMosi;
       Con.println("t1s: MOSI/MISO are the other way round on this board -- using the swapped mapping");
     }
   } else {
-    Con.printf("t1s: probe OK, DEVID 0x%08lx (MOSI=IO%d MISO=IO%d)\n", (unsigned long)probed, mosi, miso);
+    Con.printf("t1s: probe OK, DEVID 0x%08lx (MOSI=IO%d MISO=IO%d CS=IO%d, %s)\n", (unsigned long)probed, mosi,
+               miso, gPinCs, hatRevD() ? "HAT Rev D" : "CS on IO0: HAT Rev C / TSN Lab");
   }
 
   spi_bus_config_t bus = {};
@@ -256,7 +269,7 @@ static bool t1sStart(bool withNetif) {
   // Softer edges instead of series damping resistors: ~20 mm of riser stack between the ESP32
   // and the HAT, and the ESP32-S3's default drive (~20 mA) rings on it for no benefit at
   // <= 25 MHz. CAP_1 is ~10 mA. Raise it back with `spi` tests if edges ever look too slow.
-  for (int pin : {kPinT1sSclk, mosi, kPinT1sCs}) gpio_set_drive_capability((gpio_num_t)pin, GPIO_DRIVE_CAP_1);
+  for (int pin : {kPinT1sSclk, mosi, gPinCs}) gpio_set_drive_capability((gpio_num_t)pin, GPIO_DRIVE_CAP_1);
 
   // Install at the configured clock; on failure free the driver and step down.
   static spi_device_interface_config_t dev = {};   // static: the driver keeps a pointer
@@ -276,7 +289,7 @@ static bool t1sStart(bool withNetif) {
     dev = {};
     dev.mode = 0;
     dev.clock_speed_hz = hz;
-    dev.spics_io_num = kPinT1sCs;
+    dev.spics_io_num = gPinCs;
     dev.queue_size = 20;
     // Field by field rather than ETH_LAN865X_DEFAULT_CONFIG: that macro lists its designators
     // out of declaration order, which C accepts and C++ (this file) rejects.
@@ -293,7 +306,7 @@ static bool t1sStart(bool withNetif) {
     err = esp_eth_driver_install(&ethCfg, &gEth);
     // This is the line that says whether the board works at all: install runs the chip reset,
     // reads DEVID and refuses anything but 0x8650/0x8651. ESP_ERR_TIMEOUT or ESP_ERR_INVALID_CRC
-    // means SPI did not reach the chip at this clock: check the riser and CS on IO0.
+    // means SPI did not reach the chip at this clock: check the riser and CS (IO0, or IO8 on Rev D).
     Con.printf("t1s: driver install at %u MHz: %s\n", mhz, esp_err_to_name(err));
     if (err == ESP_OK) {
       gSpiMhzRunning = mhz;
@@ -844,40 +857,81 @@ static void tsuFreq(double ppb) {             // increment = 40 ns x (1 + ppb e-
 }
 
 // ---------------------------------------------------------------- PPS (`ptp pps`)
-// A 1 Hz pulse from event generator 0 on DIOA0, edges on whole seconds of the LAN8651 wall clock:
-// two nodes' PPS on a scope give the time-sync error directly (DS60001734F 4.5.4.1; MMS 10:
-// EG0STNS 0x222, EG0STSECL 0x223, EG0STSECH 0x224, EG0PW 0x225, EG0IT 0x226, EG0CTL 0x227,
-// PADCTRL 0x88 A0SEL = 01). DIOA0 becomes an OUTPUT: on a board that ties DIOA0 to ground -- Rev C
-// of this HAT does -- that drives the pin into a short. Hence `force`.
+// Two ways to put the LAN8651 wall clock on a pin (DS60001734F 4.5.4; register map MMS 10):
+//   DIOA4: the dedicated 1PPS (PADCTRL 0x88 A4SEL = 01, PPSCTL 0x239: PPSEN bit 0, PPSDIS bit 1,
+//          PPSPW bits 6:2, width (16 * PPSPW + 1) * 40 ns). HAT Rev D routes DIOA4 to TP1 and
+//          header 13 (IO40); the firmware counts its edges on IO40 as a self-check.
+//   DIOA0: event generator 0 (EG0STNS 0x221, EG0STSECL 0x222, EG0STSECH 0x223, EG0PW 0x224,
+//          EG0IT 0x225, EG0CTL 0x226: START 0, STOP 1, AH 2, REP 3, ISREL 4; PADCTRL A0SEL = 01).
+//          A 100 ms pulse, easier on a slow scope; no HAT revision routes DIOA0.
+// Both make the pin an OUTPUT. Rev C and TSN Lab's HAT tie DIOA to ground, so on any board but
+// Rev D (CS found on IO8) the command wants `force`.
+static volatile uint32_t gPpsEdges = 0;
+static volatile int64_t gPpsLastUs = 0;
+static void IRAM_ATTR ppsIsr(void *) {
+  gPpsEdges = gPpsEdges + 1;
+  gPpsLastUs = esp_timer_get_time();
+}
+
 static void cmdPps(const char *rest) {
-  char w1[8] = "", w2[8] = "";
-  sscanf(rest, "%*s %7s %7s", w1, w2);
+  char w1[8] = "", w2[8] = "", w3[8] = "";
+  sscanf(rest, "%*s %7s %7s %7s", w1, w2, w3);
   if (!gMac) { Con.println("pps: no LAN8651"); return; }
   uint32_t pad = 0;
   esp_eth_mac_lan865x_read_reg(gMac, 10, 0x88, &pad);
   if (!strcmp(w1, "off")) {
-    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x227, 1u << 1);            // STOP
-    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x88, pad & ~3u);           // DIOA0 back to input (event capture)
-    Con.println("pps: off, DIOA0 input again");
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x239, 1u << 1);           // PPSDIS (stops at the end of the second)
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x226, 1u << 1);           // EG0 STOP
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x88, pad & ~0x303u);       // A0SEL, A4SEL = 00: inputs again
+    gpio_isr_handler_remove((gpio_num_t)kPinT1sPps);
+    Con.println("pps: off, DIOA0/DIOA4 inputs again");
     return;
   }
-  if (strcmp(w1, "on") || strcmp(w2, "force")) {
-    Con.println("pps: `ptp pps on force` drives DIOA0 as an output -- only on a board where DIOA0 is NOT tied to"
-                " ground (this HAT's Rev C ties it). `ptp pps off` to stop.");
+  if (!strcmp(w1, "") || !strcmp(w1, "status")) {
+    Con.printf("pps: PADCTRL 0x%08lx (A0SEL %lu, A4SEL %lu), %s; IO40 edges %lu, last %lld us ago\n",
+               (unsigned long)pad, (unsigned long)(pad & 3), (unsigned long)((pad >> 8) & 3),
+               hatRevD() ? "HAT Rev D" : "CS on IO0 (DIOA grounded on Rev C / TSN Lab)",
+               (unsigned long)gPpsEdges, gPpsLastUs ? (long long)(esp_timer_get_time() - gPpsLastUs) : -1LL);
+    return;
+  }
+  const bool eg0 = !strcmp(w1, "eg0");
+  const bool forced = !strcmp(w2, "force");                             // `on force` / `eg0 force`
+  if ((strcmp(w1, "on") && !eg0) || (eg0 && !forced) || (!eg0 && !hatRevD() && !forced)) {
+    Con.println(eg0 ? "pps: `ptp pps eg0 force` drives DIOA0 -- no HAT revision routes it, Rev C grounds it"
+                    : "pps: this board has CS on IO0 (Rev C / TSN Lab HAT), which tie DIOA4 to ground. "
+                      "`ptp pps on force` only if you know DIOA4 is free.");
+    return;
+  }
+  if (!eg0) {
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x239, 1u << 1);            // PPSDIS before changing the width
+    delay(1100);                                                         // it stops at the end of the second
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x239, 31u << 2);           // PPSPW 31: (16*31+1)*40 ns = 19.9 us
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x88, (pad & ~0x300u) | (1u << 8));   // A4SEL = 1PPS
+    esp_eth_mac_lan865x_write_reg(gMac, 10, 0x239, (31u << 2) | 1u);    // PPSEN
+    gpio_reset_pin((gpio_num_t)kPinT1sPps);
+    gpio_set_direction((gpio_num_t)kPinT1sPps, GPIO_MODE_INPUT);
+    gpio_set_intr_type((gpio_num_t)kPinT1sPps, GPIO_INTR_POSEDGE);
+    gpio_isr_handler_remove((gpio_num_t)kPinT1sPps);
+    gpio_isr_handler_add((gpio_num_t)kPinT1sPps, ppsIsr, nullptr);
+    gPpsEdges = 0;
+    uint32_t ctl = 0;
+    esp_eth_mac_lan865x_read_reg(gMac, 10, 0x239, &ctl);
+    Con.printf("pps: 1PPS on DIOA4 (TP1, header 13), 19.9 us wide on each whole second of the LAN8651 clock "
+               "(PPSCTL 0x%08lx). `ptp pps` counts the edges seen on IO40.\n", (unsigned long)ctl);
     return;
   }
   const int64_t now = tsuNow();
   const uint64_t start = (uint64_t)(now / 1000000000LL) + 2;              // a whole second, 1-2 s ahead
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x227, 1u << 1);              // stop anything running
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x222, 0);                    // start: ns
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x223, (uint32_t)start);      // seconds low
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x224, (uint32_t)(start >> 32) & 0xFFFF);
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x225, 100000000);            // 100 ms high
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x226, 900000000);            // 900 ms low: period 1 s
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x226, 1u << 1);              // stop anything running
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x221, 0);                    // start: ns
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x222, (uint32_t)start);      // seconds low
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x223, (uint32_t)(start >> 32) & 0xFFFF);
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x224, 100000000);            // 100 ms high
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x225, 900000000);            // 900 ms low: period 1 s
   esp_eth_mac_lan865x_write_reg(gMac, 10, 0x88, (pad & ~3u) | 1u);       // A0SEL = event generator 0
-  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x227, (1u << 3) | (1u << 2) | 1u);   // REP | AH | START, absolute
+  esp_eth_mac_lan865x_write_reg(gMac, 10, 0x226, (1u << 3) | (1u << 2) | 1u);   // REP | AH | START, absolute
   uint32_t ctl = 0;
-  esp_eth_mac_lan865x_read_reg(gMac, 10, 0x227, &ctl);
+  esp_eth_mac_lan865x_read_reg(gMac, 10, 0x226, &ctl);
   Con.printf("pps: DIOA0 rising on every whole second of the LAN8651 clock from %llu s (EG0CTL 0x%08lx)\n",
              (unsigned long long)start, (unsigned long)ctl);
 }
@@ -1302,7 +1356,8 @@ static void help() {
       "sync <ip> [n] [ms]         two-way time transfer (PTP/NTP exchange): offset, delay; + hardware if the peer runs ptp on\n"
       "ptp [on|off]               LAN8651 hardware frame stamps (TSU wall clock) for the sync exchange\n"
       "ptp lock <ip> [sec] [kp] [ki] | stop  discipline the LAN8651 clock to <ip>'s (PI, 1 s updates)\n"
-      "ptp pps on force | off     1 Hz on DIOA0 from the LAN8651 clock (NOT on boards that ground DIOA0)\n"
+      "ptp pps on | off | status  1PPS on DIOA4 (HAT Rev D: TP1, header 13 / IO40); `force` on other boards\n"
+      "ptp pps eg0 force          1 Hz, 100 ms on DIOA0 from event generator 0 (no HAT routes DIOA0)\n"
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"

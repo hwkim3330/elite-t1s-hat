@@ -39,10 +39,10 @@ crystal oscillation margin, T1S signal quality and EMC, stack height.
 
 - **LAN8651, single 3.3 V** from the Elite's header. The '51 regulates its own
   1.8 V core, so the board has no regulator.
-- **Host SPI on the Elite's IO11/9/10, CS on IO0 (BOOT strap), IRQ IO39,
-  RESET IO42.** These are the pins a Pi HAT would use, so the mainline
-  `microchip,lan8651` driver also works on a Pi. Don't press BOOT on a
-  running node.
+- **Host SPI on the Elite's IO11/9/10, CS on IO8 (header 27), IRQ IO39,
+  RESET IO42; 1PPS from DIOA4 on IO40 (header 13) and test pad TP1.** Rev C
+  and the TSN Lab HAT put CS on header 24 (IO0, the BOOT strap) as a Pi HAT
+  would; Rev D moved it off the strap. The firmware finds CS on either pin.
 - **Bus side per AN1718:** common-mode choke → 100 nF DC block → termination
   (fit per bus position: 49R9 end / 1K5 drop) → optional ESD → 4-pin 2.54 mm push-in (Rev D)
   terminal block, wired P N N P so a node taps a daisy chain.

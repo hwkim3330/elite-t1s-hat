@@ -68,13 +68,14 @@ about it before.
 | | |
 |---|---|
 | `t1s_node.ino` | bring-up, PLCA, UDP echo on port 7, serial console |
-| `pins.h` | HAT signal → Elite GPIO, read off LilyGo's schematic (and why CS_N on IO0 is fine) |
+| `pins.h` | HAT signal → Elite GPIO, read off LilyGo's schematic (CS_N on IO0 for Rev C / TSN Lab's HAT, IO8 for Rev D; 1PPS in on IO40) |
 | `bridge.h` | bridge mode: W5500 bring-up (no IP, promiscuous) + the two-port learning forwarder |
 | `w5500_spi.h` | from the W5500 bench firmware: the W5500 SPI layer that splits reads at the RX buffer wrap (a real IDF driver bug found there) |
 | `src/lan865x/` | Espressif's `lan865x` 0.2.0 + `lan86xx_common` MAC-PHY driver, Apache-2.0, vendored with one marked patch (raw register access). See `VENDORED.md` |
 
 The driver talks OPEN Alliance TC6 over **SPI3** (MOSI IO11, MISO IO9,
-SCLK IO10, CS IO0) with IRQ_N on IO39. It uses SPI3 because the W5500
+SCLK IO10, CS IO0, or IO8 on HAT Rev D: bring-up reads DEVID through each and keeps the one
+that answers) with IRQ_N on IO39. It uses SPI3 because the W5500
 firmware already uses SPI2, so the two can later share one image as a
 T1S ↔ 100BASE-TX bridge.
 
@@ -344,10 +345,14 @@ Mean offset −0.3 … −1 µs, frequency −20.8 … −21.0 ppm ± 2.5–3 pp
 software stamps and the converter; two LAN8651 nodes (hardware on both ends) are the next step,
 and the servo already uses a master's hardware follow-up when it gets one.
 
-**PPS (`ptp pps on force` / `off`, not yet run on hardware).** Event generator 0 drives DIOA0 high for
-100 ms at every whole second of the LAN8651 clock, so two locked nodes' pulses on a scope show the
-sync error directly. DIOA0 becomes an output: **never on a board that ties DIOA0 to ground** -- Rev C
-of this HAT does (they were unused when it was drawn), hence the `force`.
+**PPS (`ptp pps on` / `off` / `status`, not yet run on hardware).** The LAN8651's dedicated 1PPS on
+DIOA4: a 19.9 µs pulse at every whole second of its clock (PADCTRL A4SEL = 01, PPSCTL PPSEN). HAT
+Rev D routes it to test pad TP1 and header 13 (IO40), where the firmware counts the edges as a
+self-check; two locked nodes' pulses on a scope show the sync error directly. It drives DIOA4 as an
+output, so on a board found with CS on IO0 (Rev C, TSN Lab's HAT: DIOA tied to ground) it wants
+`force`. `ptp pps eg0 force` is the older path, event generator 0 on DIOA0 with a 100 ms pulse; no HAT
+routes DIOA0. Until 2026-10-07 that path wrote EG0 one register too high (0x222…0x227 instead of
+DS60001734F's 0x221…0x226) -- never run, since every board so far grounds DIOA.
 
 **Throughput cost.** `-DLAN865X_FRAME_TIMESTAMPS` adds an 8-byte stamp to every received frame on
 SPI: onto T1S (1472 B, 9.5 offered) 8.75 → 8.20 Mbit/s (−6 %); transmit unchanged. Hence a build
