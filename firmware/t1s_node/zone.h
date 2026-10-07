@@ -26,7 +26,8 @@ static uint8_t gTargetMac[6];
 static volatile bool gTargetKnown = false;
 static volatile uint32_t gRcpReplies = 0, gRcpLastLen = 0;
 static volatile uint8_t gRcpLastRc = 0xFF;
-static uint8_t gRcpLast[64];
+static uint8_t gRcpLast[160];
+static volatile uint16_t gRcpLastSess = 0;
 static volatile uint32_t gArpAsked = 0, gArpAnswered = 0, gArpReplies = 0, gTxFrames = 0, gTxFail = 0, gRxUdp = 0;
 // a pending ARP reply (filled by rx, sent by the task)
 static volatile bool gArpPending = false;
@@ -119,6 +120,7 @@ static void rx(esp_eth_handle_t h, const uint8_t *f, uint32_t len) {
     if (sport == 49153 && len >= (uint32_t)(14 + ihl + 8 + 16)) {   // an RCP (SOME/IP) response
       const uint8_t *sip = u + 8;
       gRcpLastRc = sip[15];
+      gRcpLastSess = (sip[10] << 8) | sip[11];
       gRcpLastLen = len - (14 + ihl + 8);
       memcpy(gRcpLast, sip, gRcpLastLen < sizeof(gRcpLast) ? gRcpLastLen : sizeof(gRcpLast));
       gRcpReplies = gRcpReplies + 1;
@@ -209,6 +211,107 @@ static void rcpPing(uint16_t method) {
   udp(buf, 50000, 6800, 16);
 }
 
+// ---- RCP client: SOME/IP WTLV (tag = wire type << 12 | field number; 0/1/2 = u8/u16/u32, 6 = blob u16 len)
+static int put8(uint8_t *p, int f, uint8_t v) { p[0] = 0x00; p[1] = f; p[2] = v; return 3; }
+static int put16(uint8_t *p, int f, uint16_t v) { p[0] = 0x10; p[1] = f; p[2] = v >> 8; p[3] = v; return 4; }
+static int put32(uint8_t *p, int f, uint32_t v) { p[0] = 0x20; p[1] = f; p[2] = v >> 24; p[3] = v >> 16; p[4] = v >> 8; p[5] = v; return 6; }
+static int putBlob(uint8_t *p, int f, const uint8_t *d, int n) { p[0] = 0x60; p[1] = f; p[2] = n >> 8; p[3] = n; memcpy(p + 4, d, n); return 4 + n; }
+// find field f in the reply's WTLV payload: returns a pointer to its value (blob: after the length), n = size
+static const uint8_t *field(int f, int &n) {
+  const uint8_t *p = gRcpLast + 16, *end = gRcpLast + (gRcpLastLen < sizeof(gRcpLast) ? gRcpLastLen : sizeof(gRcpLast));
+  while (p + 2 <= end) {
+    const int t = p[0] >> 4, id = ((p[0] & 0x0F) << 8) | p[1];
+    p += 2;
+    int len = t == 6 ? ((p[0] << 8) | p[1]) : (1 << t);
+    if (t == 6) p += 2;
+    if (id == f) { n = len; return p; }
+    p += len;
+  }
+  return nullptr;
+}
+static uint16_t gSess = 1;
+// one request, wait for its response; rc 0 = OK, 0xFE = timeout
+static uint8_t call(uint16_t method, const uint8_t *pl, int n, int ms = 300) {
+  static uint8_t buf[42 + 16 + 64];
+  const uint16_t sess = gSess++;
+  const uint32_t len = 8 + n;
+  const uint8_t h[16] = {0xFF, 0x10, (uint8_t)(method >> 8), (uint8_t)method, (uint8_t)(len >> 24), (uint8_t)(len >> 16),
+                         (uint8_t)(len >> 8), (uint8_t)len, 0xAF, 0xFE, (uint8_t)(sess >> 8), (uint8_t)sess, 1, 1, 0, 0};
+  memcpy(buf + 42, h, 16);
+  memcpy(buf + 58, pl, n);
+  const uint32_t before = gRcpReplies;
+  udp(buf, 50000, 6800, 16 + n);
+  for (int i = 0; i < ms / 2; i++) {
+    if (gRcpReplies != before && gRcpLastSess == sess) return gRcpLastRc;
+    vTaskDelay(pdMS_TO_TICKS(2));
+  }
+  return 0xFE;
+}
+static uint16_t gI2c = 0xFFFF, gSpi = 0xFFFF;
+static uint32_t gWid[2];
+static uint16_t openWithRecovery(uint16_t method, const uint8_t *pl, int n, uint16_t first, uint16_t closeMethod) {
+  for (int attempt = 0; attempt < 2; attempt++) {
+    uint8_t rc = call(method, pl, n);
+    int fn;
+    const uint8_t *v = rc == 0 ? field(0, fn) : nullptr;
+    if (v && fn == 2) return (v[0] << 8) | v[1];
+    if (rc != 5) break;                             // NOT_REACHABLE: still held by a client that died
+    uint8_t c[4];
+    for (uint16_t h = first; h < first + 24; h++) call(closeMethod, c, put16(c, 0, h), 100);
+  }
+  return 0xFFFF;
+}
+static bool sensorsOpen() {
+  uint8_t p[32];
+  int n;
+  if (gI2c == 0xFFFF) {
+    n = put8(p, 0, 8); n += put8(p + n, 1, 9); n += put8(p + n, 2, 1);
+    gI2c = openWithRecovery(0x1200, p, n, 0x100, 0x1202);
+    gWid[0] = 0;
+    if (gI2c != 0xFFFF) {
+      const uint8_t init[3][3] = {{0x03, 0x02, 0x08}, {0x04, 0x01, 0x07}, {0x00, 0x00, 0x00}};   // PS fast, 16 bit, LED 200 mA
+      for (auto &w : init) {
+        n = put16(p, 0, gI2c); n += put16(p + n, 1, 0x51); n += put32(p + n, 2, gWid[0]++); n += putBlob(p + n, 3, w, 3);
+        call(0x1204, p, n);
+      }
+    }
+  }
+  if (gSpi == 0xFFFF) {
+    const uint8_t pins[4] = {12, 13, 14, 15};
+    n = putBlob(p, 0, pins, 4);
+    call(0x1105, p, n);
+    n = put8(p, 0, 12); n += put8(p + n, 1, 13); n += put8(p + n, 2, 14); n += put8(p + n, 3, 15);
+    n += put8(p + n, 4, 1); n += put32(p + n, 5, 1923000);
+    gSpi = openWithRecovery(0x1500, p, n, 0x300, 0x1502);
+    gWid[1] = 0;
+  }
+  return gI2c != 0xFFFF && gSpi != 0xFFFF;
+}
+static int readProx() {
+  uint8_t p[32], reg = 0x08;
+  int n = put16(p, 0, gI2c); n += put16(p + n, 1, 0x51); n += put16(p + n, 2, 2); n += put32(p + n, 3, gWid[0]++);
+  n += putBlob(p + n, 4, &reg, 1);
+  if (call(0x1208, p, n)) return -1;
+  int fn;
+  const uint8_t *v = field(1, fn);
+  return v && fn >= 2 ? v[0] | (v[1] << 8) : -1;
+}
+static int readAdc(int ch) {
+  uint8_t p[32];
+  const uint8_t cmd[3] = {0x06, (uint8_t)(ch << 6), 0xFF};
+  int n = put16(p, 0, gSpi); n += put16(p + n, 1, 3); n += put32(p + n, 2, gWid[1]++); n += putBlob(p + n, 3, cmd, 3);
+  if (call(0x1508, p, n)) return -1;
+  int fn;
+  const uint8_t *v = field(1, fn);
+  return v && fn >= 3 ? ((v[1] & 0x0F) << 8) | v[2] : -1;
+}
+static void sensorsClose() {
+  uint8_t p[4];
+  if (gI2c != 0xFFFF) call(0x1202, p, put16(p, 0, gI2c));
+  if (gSpi != 0xFFFF) call(0x1502, p, put16(p, 0, gSpi));
+  gI2c = gSpi = 0xFFFF;
+}
+
 // zone [status] | ip <alias> <endpoint> | led <r> <g> <b> | dot <r> <g> <b> | off
 static void command(const char *a) {
   int r, g, b;
@@ -235,6 +338,21 @@ static void command(const char *a) {
     Con.printf("zone: rcp GetStatus: reply rc %u, %lu B:", gRcpLastRc, (unsigned long)gRcpLastLen);
     for (uint32_t i = 16; i < gRcpLastLen && i < 64; i++) Con.printf(" %02x", gRcpLast[i]);
     Con.println();
+    return;
+  }
+  if (!strncmp(a, "sense", 5)) {             // zone sense [n]: open the stick + proximity over RCP and read n times
+    const int cnt = atoi(a + 5) > 0 ? atoi(a + 5) : 10;
+    const bool ok = sensorsOpen();
+    Con.printf("zone: sensors i2c 0x%04x spi 0x%04x %s\n", gI2c, gSpi, ok ? "open" : "NOT all open");
+    const int64_t t0 = esp_timer_get_time();
+    for (int i = 0; i < cnt; i++) {
+      const int64_t a0 = esp_timer_get_time();
+      const int x = gSpi != 0xFFFF ? readAdc(0) : -1, y = gSpi != 0xFFFF ? readAdc(1) : -1, pr = gI2c != 0xFFFF ? readProx() : -1;
+      Con.printf("zone: x %d y %d prox %d  (%lld us for 3 RCP round trips)\n", x, y, pr, (long long)(esp_timer_get_time() - a0));
+      vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    (void)t0;
+    if (strstr(a, "keep") == nullptr) sensorsClose();
     return;
   }
   if (!strcmp(a, "off")) {
