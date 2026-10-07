@@ -354,6 +354,10 @@ output, so on a board found with CS on IO0 (Rev C, TSN Lab's HAT: DIOA tied to g
 routes DIOA0. Until 2026-10-07 that path wrote EG0 one register too high (0x222…0x227 instead of
 DS60001734F's 0x221…0x226) -- never run, since every board so far grounds DIOA.
 
+**Zenoh and the servo (2026-10-07).** Zenoh's 5 Hz ping shares the bus with the exchanges: paired
+60 s runs gave σ 32.7 µs with it, 19.2 µs with `zenoh pause` on both boards (3 of 3 pairs,
+`esp32-t1s-bridge/docs/t1s_results/ptp_wifi`). Pause it for a measurement; the tablet app does.
+
 **Throughput cost.** `-DLAN865X_FRAME_TIMESTAMPS` adds an 8-byte stamp to every received frame on
 SPI: onto T1S (1472 B, 9.5 offered) 8.75 → 8.20 Mbit/s (−6 %); transmit unchanged. Hence a build
 option, not the default. The W5500 interrupt costs nothing (8.76 polled, 8.75 interrupt) and lifts

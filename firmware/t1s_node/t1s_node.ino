@@ -949,7 +949,7 @@ static void lockTask(void *) {
   bool stepped = false;
   uint32_t seq = 0x40000000u;
   tsuFreq(0);
-  Con.printf("ptpl: locking the LAN8651 clock to %s for %d s (kp %.1f ki %.1f)\n", gLockHost, gLockSecs, kp, ki);
+  Con.printf("ptpl: locking the LAN8651 clock to %s for %d s (kp %.2f ki %.3f)\n", gLockHost, gLockSecs, kp, ki);
   for (int sec = 0; sec < gLockSecs && gLockRun; sec++) {
     int64_t bestOff = 0, bestDly = INT64_MAX;
     int ok = 0;
