@@ -122,10 +122,37 @@ static void onPong(z_loaned_sample_t *sample, void *) {
   sLastPongMs = millis();
 }
 
+// Zenoh peers this node has heard (their pings on test/ping/<who>): the tablet's Zenoh view
+struct Peer { char name[24]; uint32_t pings, lastMs; };
+static Peer sPeers[8];
+static uint8_t sNPeers = 0;
+
+static void notePeer(const char *who) {
+  portENTER_CRITICAL(&sMbx);
+  int i = 0;
+  while (i < sNPeers && strcmp(sPeers[i].name, who)) i++;
+  if (i == sNPeers && sNPeers < 8) { strncpy(sPeers[i].name, who, sizeof(sPeers[i].name) - 1); sPeers[i].pings = 0; sNPeers++; }
+  if (i < sNPeers) { sPeers[i].pings++; sPeers[i].lastMs = millis(); }
+  portEXIT_CRITICAL(&sMbx);
+}
+
+void zenohT1sTele(char *out, size_t n) {
+  const int32_t last = sRttN ? sRttRing[(sRttN - 1) % 600] : -1;
+  int o = snprintf(out, n, "z %d %d %lu %lu %ld %u ", sUp ? 1 : 0, sPaused ? 1 : 0, (unsigned long)sSent,
+                   (unsigned long)sPongs, (long)last, (unsigned)sNPeers);
+  portENTER_CRITICAL(&sMbx);
+  for (int i = 0; i < sNPeers && o < (int)n - 1; i++)
+    o += snprintf(out + o, n - o, "%s%s:%lu:%lu", i ? "," : "", sPeers[i].name, (unsigned long)sPeers[i].pings,
+                  (unsigned long)(millis() - sPeers[i].lastMs));
+  portEXIT_CRITICAL(&sMbx);
+  if (!sNPeers && o < (int)n - 1) snprintf(out + o, n - o, "-");
+}
+
 static void onPingAll(z_loaned_sample_t *sample, void *) {
   Echo e;
   keySegment(sample, 2, e.who, sizeof(e.who));  // test/ping/<who>
   if (!strcmp(e.who, sNode)) return;             // our own ping, looped back by multicast
+  notePeer(e.who);
   copyPayload(sample, e.body, sizeof(e.body));
   const uint8_t next = (sEchoHead + 1) % 8;
   if (next == sEchoTail) return;  // queue full: dropped, the sender counts it as lost
@@ -443,5 +470,6 @@ bool zenohT1sAvailable() { return false; }
 void zenohT1sStartTask(volatile bool *, const uint8_t *, const uint8_t *, uint8_t, const char *) {}
 bool zenohT1sTakeConfig(char *, size_t) { return false; }
 void zenohT1sAck(const char *) {}
+void zenohT1sTele(char *out, size_t n) { snprintf(out, n, "z 0 0 0 0 -1 0 -"); }
 
 #endif

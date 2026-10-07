@@ -16,3 +16,5 @@ void zenohT1sCommand(const char *args);
 bool zenohT1sTakeConfig(char *out, size_t n);
 // The console task's answer, published on t1s/<node>/config/ack by the zenoh task.
 void zenohT1sAck(const char *text);
+// `tele`'s Zenoh part: up, paused, sent, pongs, last rtt us, peers, name:pings:ago_ms,...
+void zenohT1sTele(char *out, size_t n);

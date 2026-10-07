@@ -370,6 +370,12 @@ static bool t1sStart(bool withNetif) {
 // The other end of every test below: anything sent to port 7 comes straight back, so a PC
 // or another node can measure round-trip time over the bus with nothing on this side but
 // this task.
+// The edge side of `ctl`: control messages arrive on the echo port (16 B, CtlMsg below) and are
+// echoed like anything else; the last one is also kept, so `tele` shows what this node was told.
+static volatile uint32_t gRxCtl = 0, gRxCtlUs = 0;
+static volatile uint16_t gRxSteer = 32768, gRxBtn = 0;
+static volatile uint8_t gRxY = 255, gRxZ = 255;
+
 static void echoTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in a = {};
@@ -382,6 +388,14 @@ static void echoTask(void *) {
     socklen_t fl = sizeof(from);
     int n = recvfrom(s, buf, sizeof(buf), 0, (sockaddr *)&from, &fl);
     if (n > 0) { sendto(s, buf, n, 0, (sockaddr *)&from, fl); gEchoCount = gEchoCount + 1; }
+    if (n == 16) {   // CtlMsg: seq, tUs, steer @8, y @10, z @11, rz @12, flags @13, btn @14
+      uint16_t st, bt;
+      memcpy(&st, buf + 8, 2);
+      memcpy(&bt, buf + 14, 2);
+      gRxSteer = st; gRxY = buf[10]; gRxZ = buf[11]; gRxBtn = bt;
+      gRxCtl = gRxCtl + 1;
+      gRxCtlUs = (uint32_t)esp_timer_get_time();
+    }
   }
 }
 
@@ -520,6 +534,7 @@ static int gCtlSock = -1;
 static int32_t *gCtlRtt = nullptr;      // per seq, us; -1 = no echo
 static uint32_t *gCtlAge = nullptr;     // input age at send (last `w` change -> send), us
 static volatile uint32_t gCtlSent = 0, gCtlEchoed = 0, gCtlLate = 0, gCtlSendFail = 0;
+static volatile int32_t gCtlLastRtt = -1;
 static volatile int64_t gCtlLastEcho = 0, gCtlMaxGap = 0;
 static esp_timer_handle_t gCtlTimer = nullptr;
 static constexpr int kCtlMax = 200000;
@@ -537,6 +552,7 @@ static void ctlRecvTask(void *) {
       gCtlRtt[in.seq] = (int32_t)((uint32_t)t - in.tUs);
       gCtlEchoed = gCtlEchoed + 1;
       if (gCtlRtt[in.seq] > gCtl.deadlineUs) gCtlLate = gCtlLate + 1;
+      gCtlLastRtt = gCtlRtt[in.seq];
       if (gCtlLastEcho && t - gCtlLastEcho > gCtlMaxGap) gCtlMaxGap = t - gCtlLastEcho;
       gCtlLastEcho = t;
     }
@@ -829,6 +845,7 @@ static int64_t takeTxStamp() {
 // exchange with the smallest delay, steps once, then runs a PI loop on the TSU frequency
 // (TI + TISUBN: 40 ns per 25 MHz tick in 2^-24 ns units). Offset printed = master - node, ns.
 static volatile bool gLockRun = false;
+static volatile int64_t gLockOffNs = 0;   // last second's offset, for `tele`
 static char gLockHost[16];
 static int gLockSecs = 60;
 static float gLockKp = 0.2f, gLockKi = 0.02f;   // measured best on this bench (W5500 master): see README
@@ -936,6 +953,38 @@ static void cmdPps(const char *rest) {
              (unsigned long long)start, (unsigned long)ctl);
 }
 
+// ---------------------------------------------------------------- telemetry (`tele`)
+// One line every <ms> with what a live view needs, so the tablet does not poll five commands:
+//   tele: <ms> w <steer> <y> <z> <rz> <btn> <changes> ctl <run> <sent> <echoed> <late> <last rtt us>
+//         rx <count> <steer> <y> <z> <btn> <age ms> ind <0-3> horn <0|1> ptp <run> <offset ns> echo <n>
+//         z <up> <paused> <sent> <pongs> <last rtt us> <peers> <name:pings:ago ms,...>
+static volatile uint16_t gTeleMs = 0;
+static void teleTask(void *) {
+  char zl[200];
+  for (;;) {
+    const uint16_t ms = gTeleMs;
+    if (!ms) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    const uint32_t now = (uint32_t)esp_timer_get_time();
+    zenohT1sTele(zl, sizeof(zl));
+    Con.printf("tele: %lu w %u %u %u %u %u %lu ctl %d %lu %lu %lu %ld rx %lu %u %u %u %u %ld ind %u horn %d ptp %d %lld echo %lu %s\n",
+               (unsigned long)millis(), (unsigned)gWSteer, (unsigned)gWY, (unsigned)gWZ, (unsigned)gWRz, (unsigned)gWBtn,
+               (unsigned long)gWChanges, gCtlRunning ? 1 : 0, (unsigned long)gCtlSent, (unsigned long)gCtlEchoed,
+               (unsigned long)gCtlLate, (long)gCtlLastRtt, (unsigned long)gRxCtl, (unsigned)gRxSteer, (unsigned)gRxY,
+               (unsigned)gRxZ, (unsigned)gRxBtn, gRxCtl ? (long)((now - gRxCtlUs) / 1000) : -1L, (unsigned)gIndicator,
+               millis() < gHornUntil ? 1 : 0, gLockRun ? 1 : 0, (long long)gLockOffNs, (unsigned long)gEchoCount, zl);
+  }
+}
+
+static void cmdTele(const char *a) {
+  static bool started = false;
+  if (!strcmp(a, "off") || !strcmp(a, "0")) { gTeleMs = 0; Con.println("tele: off"); return; }
+  const int ms = atoi(a);
+  gTeleMs = (uint16_t)constrain(ms > 0 ? ms : 200, 50, 5000);
+  if (!started) started = xTaskCreate(teleTask, "tele", 4096, nullptr, 1, nullptr) == pdPASS;
+  Con.printf("tele: every %u ms\n", (unsigned)gTeleMs);
+}
+
 static void lockTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in to = {};
@@ -997,6 +1046,7 @@ static void lockTask(void *) {
     if (freq > 200000) freq = 200000;
     if (freq < -200000) freq = -200000;
     tsuFreq(freq);
+    gLockOffNs = bestOff;
     Con.printf("ptpl: %d offset %lld ns delay %lld ns freq %+.0f ppb (%d/16)\n", sec, (long long)bestOff,
                (long long)bestDly, freq, ok);
   }
@@ -1361,6 +1411,8 @@ static void help() {
       "evt <ip> <code>            body event to <ip> (0 off 1 left 2 right 3 hazard 4 horn 5 flash), timed to its ack\n"
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
+      "tele [ms|off]              one telemetry line every ms (wheel, ctl, received command, ptp, zenoh peers)\n"
+      "ble [on|off]               BLE console (Nordic UART service; saved, on reboot)\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
       "rxlog                      the last frames received: source, destination, type (and this board's MACs)\n"
       "capture start [n]|stop|dump  record received frames (us time, 128 B) for a pcap\n"
@@ -1434,6 +1486,7 @@ static void handleLine(char *line) {
     Con.printf("promisc %s: %s\n", on ? "on" : "off",
                h ? esp_err_to_name(esp_eth_ioctl(h, ETH_CMD_S_PROMISCUOUS, &on)) : "no interface");
   }
+  else if (!strcmp(cmd, "tele")) cmdTele(n >= 1 ? a : "200");
   else if (!strcmp(cmd, "identify")) {
     const int secs = n >= 1 ? constrain(atoi(a), 1, 120) : 15;
     gIdentifyUntil = millis() + secs * 1000;

@@ -15,6 +15,9 @@
 #include <WiFi.h>
 #include <freertos/stream_buffer.h>
 #include <esp_heap_caps.h>
+#ifndef T1S_NO_BLE
+#include <NimBLEDevice.h>
+#endif
 
 #ifndef T1S_AP_PASS
 #define T1S_AP_PASS "t1s-bench"   // WPA2 needs >= 8 chars; change with -DT1S_AP_PASS=...
@@ -33,6 +36,22 @@ static volatile bool sOtaBusy = false, sClient = false;
 static bool sWifiOff = false;   // `wifi off`: no radio at all (saved)
 static volatile uint8_t sOtaPct = 0;
 
+// ---------------------------------------------------------------- BLE console
+// The same console over BLE, as the Nordic UART Service (6E400001-…): write lines to RX, get
+// everything the board prints as notifications on TX, chunked to the negotiated MTU. One
+// client at a time, like TCP. This is how the tablet app talks to boards: no WiFi needed, so a
+// board can run `wifi off` (better PTP: the radio is what scattered the master's stamps).
+#ifndef T1S_NO_BLE
+static StreamBufferHandle_t sBleOut = nullptr;
+static volatile bool sBleSub = false;
+static volatile uint16_t sBleMtu = 23;
+static NimBLECharacteristic *sBleTx = nullptr;
+static bool sBleOff = false;   // `ble off` (saved)
+static constexpr const char *kNusSvc = "6E400001-B5A3-F393-E0A9-E50E24DCCA9E";
+static constexpr const char *kNusRx = "6E400002-B5A3-F393-E0A9-E50E24DCCA9E";
+static constexpr const char *kNusTx = "6E400003-B5A3-F393-E0A9-E50E24DCCA9E";
+#endif
+
 size_t ConsoleTee::write(uint8_t c) { return write(&c, 1); }
 
 void ConsoleTee::begin() {
@@ -46,6 +65,9 @@ size_t ConsoleTee::write(const uint8_t *buf, size_t n) {
   const bool locked = sOutLock && xSemaphoreTake(sOutLock, pdMS_TO_TICKS(200)) == pdTRUE;
   Serial.write(buf, n);
   if (sOut && sClient) xStreamBufferSend(sOut, buf, n, 0);  // never blocks: full = dropped
+#ifndef T1S_NO_BLE
+  if (sBleOut && sBleSub) xStreamBufferSend(sBleOut, buf, n, 0);
+#endif
   if (locked) xSemaphoreGive(sOutLock);
   return n;
 }
@@ -63,6 +85,9 @@ static void loadNet() {
   p.getString("pass", sPass, sizeof(sPass));
   if (p.isKey("ota")) p.getString("ota", sOtaPass, sizeof(sOtaPass));
   sWifiOff = p.getBool("off", false);
+#ifndef T1S_NO_BLE
+  sBleOff = p.getBool("bleoff", false);
+#endif
   p.end();
 }
 
@@ -73,6 +98,9 @@ static void saveNet() {
   p.putString("pass", sPass);
   p.putString("ota", sOtaPass);
   p.putBool("off", sWifiOff);
+#ifndef T1S_NO_BLE
+  p.putBool("bleoff", sBleOff);
+#endif
   p.end();
 }
 
@@ -141,13 +169,80 @@ static void netTask(void *) {
   }
 }
 
+#ifndef T1S_NO_BLE
+class BleSrv : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer *, NimBLEConnInfo &ci) override {
+    // short interval: a command's answer comes back within a few tens of ms
+    NimBLEDevice::getServer()->updateConnParams(ci.getConnHandle(), 12, 24, 0, 400);
+  }
+  void onDisconnect(NimBLEServer *, NimBLEConnInfo &, int) override {
+    sBleSub = false;
+    sBleMtu = 23;
+    NimBLEDevice::startAdvertising();
+  }
+  void onMTUChange(uint16_t mtu, NimBLEConnInfo &) override { sBleMtu = mtu; }
+};
+class BleTxCb : public NimBLECharacteristicCallbacks {
+  void onSubscribe(NimBLECharacteristic *, NimBLEConnInfo &, uint16_t v) override {
+    if (sBleOut) xStreamBufferReset(sBleOut);
+    sBleSub = v != 0;
+  }
+};
+class BleRxCb : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic *c, NimBLEConnInfo &) override {
+    const std::string v = c->getValue();
+    if (sIn) xStreamBufferSend(sIn, v.data(), v.size(), 0);
+  }
+};
+
+// Drains what the board printed into notifications of up to MTU - 3 bytes. A full controller
+// queue makes notify() fail: wait and resend the same chunk rather than drop a line's middle.
+static void bleTask(void *) {
+  static uint8_t buf[512];
+  for (;;) {
+    const size_t room = sBleMtu > 3 ? (sBleMtu - 3 < sizeof(buf) ? sBleMtu - 3 : sizeof(buf)) : 20;
+    const size_t n = xStreamBufferReceive(sBleOut, buf, room, pdMS_TO_TICKS(50));
+    if (!n || !sBleSub) continue;
+    for (int tries = 0; tries < 20 && sBleSub; tries++) {
+      if (sBleTx->notify(buf, n)) break;
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }
+  }
+}
+
+static void bleBegin() {
+  if (sBleOff) { Serial.println("ble: off (saved) -- `ble on`, reboot"); return; }
+  sBleOut = xStreamBufferCreate(4096, 1);
+  if (!sBleOut || !NimBLEDevice::init(sHost)) { Serial.println("ble: init FAILED"); return; }
+  NimBLEDevice::setMTU(247);
+  NimBLEServer *srv = NimBLEDevice::createServer();
+  srv->setCallbacks(new BleSrv());
+  NimBLEService *svc = srv->createService(kNusSvc);
+  sBleTx = svc->createCharacteristic(kNusTx, NIMBLE_PROPERTY::NOTIFY);
+  sBleTx->setCallbacks(new BleTxCb());
+  NimBLECharacteristic *rx = svc->createCharacteristic(kNusRx, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
+  rx->setCallbacks(new BleRxCb());
+  svc->start();
+  NimBLEAdvertising *adv = NimBLEDevice::getAdvertising();
+  adv->addServiceUUID(kNusSvc);
+  adv->setName(sHost);
+  adv->enableScanResponse(true);
+  adv->start();
+  xTaskCreate(bleTask, "ble_con", 4096, nullptr, 2, nullptr);
+  Serial.printf("ble: advertising as %s (Nordic UART service)\n", sHost);
+}
+#endif
+
 void netConsoleBegin(const char *tag) {
   loadNet();
   snprintf(sHost, sizeof(sHost), "t1s-%s", tag);
-  if (sWifiOff) { Serial.println("net: wifi off (saved) -- no WiFi console, no OTA; `wifi ap` to turn it back on"); return; }
-  sOut = xStreamBufferCreate(4096, 1);
   sIn = xStreamBufferCreate(256, 1);
   Con.begin();
+#ifndef T1S_NO_BLE
+  bleBegin();   // before WiFi: both want internal RAM, and WiFi takes what is left
+#endif
+  if (sWifiOff) { Serial.println("net: wifi off (saved) -- no WiFi console, no OTA; `wifi ap` to turn it back on"); return; }
+  sOut = xStreamBufferCreate(4096, 1);
   // the task first, then WiFi (see the header)
   if (!sOut || !sIn || !sOutLock || xTaskCreate(netTask, "net_con", 6144, nullptr, 2, nullptr) != pdPASS) {
     Serial.println("net: task/buffer alloc FAILED -- no WiFi console, no OTA");
@@ -167,6 +262,16 @@ void netConsoleBegin(const char *tag) {
 }
 
 bool netConsoleCommand(const char *cmd, const char *a, const char *b, int n) {
+#ifndef T1S_NO_BLE
+  if (!strcmp(cmd, "ble")) {
+    if (n >= 1 && (!strcmp(a, "on") || !strcmp(a, "off"))) {
+      sBleOff = !strcmp(a, "off");
+      saveNet();
+      Con.printf("ble: %s saved, applied on reboot\n", sBleOff ? "OFF" : "on");
+    } else netConsolePrintStatus();
+    return true;
+  }
+#endif
   if (!strcmp(cmd, "wifi")) {
     if (n >= 1 && !strcmp(a, "off")) { sWifiOff = true; }
     else if (n >= 1 && !strcmp(a, "ap")) { sSsid[0] = sPass[0] = 0; sWifiOff = false; }
@@ -194,6 +299,11 @@ void netConsolePrintStatus() {
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA),
              (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#ifndef T1S_NO_BLE
+  if (sBleOff || !sBleTx) Con.println("ble: off");
+  else Con.printf("ble: %s as %s, mtu %u\n", NimBLEDevice::getServer()->getConnectedCount() ? "client connected" : "advertising",
+                  sHost, (unsigned)sBleMtu);
+#endif
   if (sWifiOff) { Con.println("wifi: OFF (saved)"); return; }
   if (sSsid[0])
     Con.printf("wifi: station on \"%s\", %s, ip %s, rssi %d dBm\n", sSsid,

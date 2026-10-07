@@ -354,6 +354,15 @@ output, so on a board found with CS on IO0 (Rev C, TSN Lab's HAT: DIOA tied to g
 routes DIOA0. Until 2026-10-07 that path wrote EG0 one register too high (0x222…0x227 instead of
 DS60001734F's 0x221…0x226) -- never run, since every board so far grounds DIOA.
 
+**BLE console and `tele` (2026-10-07).** The console also runs over BLE as the Nordic UART service
+(6E400001-…, name `t1s-<id>`, MTU 247, one client): this is how the tablet app talks to boards.
+`tele <ms>` prints one line per period with the wheel input, `ctl` counters and last round trip, the
+last control message *received* (decoded from the echo port), indicator/horn, PTP offset and Zenoh
+peers, so a live view needs no polling. `ble on|off` is saved. **Run boards with `wifi off`:** with
+BLE and WiFi both up the node had 33 KB internal RAM left and Zenoh pongs mostly lost (RTT 4.5 s);
+with WiFi off, 86–96 KB free and **Zenoh RTT 4.6–4.9 ms, half of the 9 ms measured with WiFi on**.
+OTA needs WiFi; flash over USB.
+
 **Zenoh and the servo (2026-10-07).** Zenoh's 5 Hz ping shares the bus with the exchanges: paired
 60 s runs gave σ 32.7 µs with it, 19.2 µs with `zenoh pause` on both boards (3 of 3 pairs,
 `esp32-t1s-bridge/docs/t1s_results/ptp_wifi`). Pause it for a measurement; the tablet app does.
