@@ -309,6 +309,28 @@ static uint32_t gSnsSeq = 0, gLoops = 0, gFails = 0, gBusyUs = 0, gBusyMax = 0, 
 static uint64_t gBusySum = 0;
 static uint32_t gFrames = 0;
 
+// the vehicle state, from VST2 (stateIn) or from VSS signals over SOME/IP (sdv.h, another task): the frame task
+// copies it under the same lock
+static portMUX_TYPE gStMux = portMUX_INITIALIZER_UNLOCKED;
+static uint32_t gVstAt = 0;          // millis of the last VST1/VST2: SNS1 goes back to its sender for 3 s after it
+static void applyState(uint8_t lamps, char gear, double speed, uint8_t mode, double accel, double wheel, double brake) {
+  const int64_t now = esp_timer_get_time();
+  portENTER_CRITICAL(&gStMux);
+  gSt.lamps = lamps & 0x0F;
+  gSt.gear = gear;
+  gSt.speed = speed;
+  gSt.mode = mode;
+  gSt.accel = accel;
+  gSt.wheel_deg = wheel;
+  gSt.brake = brake;
+  if ((lamps & ZR_LEFT) && !(gPrevLamps & ZR_LEFT)) gEdgeL = now;
+  if ((lamps & ZR_RIGHT) && !(gPrevLamps & ZR_RIGHT)) gEdgeR = now;
+  gPrevLamps = lamps;
+  gStAt = millis();
+  gStCount++;
+  portEXIT_CRITICAL(&gStMux);
+}
+
 static void stateIn() {
   if (gSock < 0) {
     gSock = socket(AF_INET, SOCK_DGRAM, 0);
@@ -329,27 +351,10 @@ static void stateIn() {
     if (!v1 && !v2) { gStBad++; continue; }
     int16_t speed10, wheel10 = 0;
     memcpy(&gStSeq, b + 4, 4);
-    const uint8_t lamps = b[8];
     memcpy(&speed10, b + 10, 2);
-    gSt.lamps = lamps & 0x0F;
-    gSt.gear = (char)b[9];
-    gSt.speed = speed10 / 10.0;
-    gSt.mode = b[12];
-    gSt.accel = b[13] / 100.0;
-    if (v2) {
-      memcpy(&wheel10, b + 14, 2);
-      gSt.wheel_deg = wheel10 / 10.0;
-      gSt.brake = b[16] / 100.0;
-    } else {
-      gSt.wheel_deg = 0;
-      gSt.brake = 0;
-    }
-    const int64_t now = esp_timer_get_time();
-    if ((lamps & ZR_LEFT) && !(gPrevLamps & ZR_LEFT)) gEdgeL = now;
-    if ((lamps & ZR_RIGHT) && !(gPrevLamps & ZR_RIGHT)) gEdgeR = now;
-    gPrevLamps = lamps;
-    gStAt = millis();
-    gStCount++;
+    if (v2) memcpy(&wheel10, b + 14, 2);
+    applyState(b[8], (char)b[9], speed10 / 10.0, b[12], b[13] / 100.0, v2 ? wheel10 / 10.0 : 0, v2 ? b[16] / 100.0 : 0);
+    gVstAt = millis();
     gPeer = from;
     gPeer.sin_port = htons(5009);
     gPeerKnown = true;
@@ -357,7 +362,7 @@ static void stateIn() {
 }
 
 static void sensorsOut(uint16_t busyUs) {
-  if (!gPeerKnown || gSock < 0) return;
+  if (!gPeerKnown || gSock < 0 || millis() - gVstAt > 3000) return;   // the VSS path (sdv.h) replaced VST2/SNS1
   uint8_t b[20];
   memcpy(b, "SNS1", 4);
   const uint32_t seq = gSnsSeq++;
@@ -462,11 +467,14 @@ static void frameOnce() {
     wasFresh = gStFresh;
   }
   if (gStFresh) {
+    portENTER_CRITICAL(&gStMux);
     zr_state s = gSt;
+    const int64_t edgeL = gEdgeL, edgeR = gEdgeR;
+    portEXIT_CRITICAL(&gStMux);
     const int prox = gProx;
     s.prox_m = prox < 0 ? -1 : rint(zr_prox_m(prox) * 100) / 100;   // the PC rounds to cm too
     const int64_t now = esp_timer_get_time();
-    zr_car(fb, &s, (now - gEdgeL) / 1e6, (now - gEdgeR) / 1e6);
+    zr_car(fb, &s, (now - edgeL) / 1e6, (now - edgeR) / 1e6);
   } else {
     zr_nolink(fb, gFrames);
   }

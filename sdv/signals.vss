@@ -1,0 +1,40 @@
+# VSS signal dictionary for the T1S SDV signal API (one file; `python3 sdv/gen.py` writes the C, Python and JS tables).
+#
+# id     16-bit signal ID, 0x0001..0x3FFF. On the wire (SOME/IP, service 0x5653): event 0x8000|id, set method id,
+#        get method 0x4000|id. The high byte is the event group, so a VSS branch maps to one or a few groups.
+# path   COVESA VSS path. Paths under Vehicle.Private are overlays this bench adds (VSS allows that); a `*` in the
+#        notes column marks a standard path whose type differs from the VSS catalogue (said why).
+# type   bool u8 i8 u16 i16 u32 i32 f32 (big-endian on the wire, as SOME/IP serialises)
+# unit   VSS unit, or - ; access: s = sensor (published), a = actuator (also takes `set`)
+#
+# id     path                                                        type  unit     access  notes
+0x0101   Vehicle.Speed                                               f32   km/h     s
+0x0102   Vehicle.Powertrain.Transmission.SelectedGear                i8    -        a       VSS: 0 N, -1 R, 126 P, 127 D
+0x0103   Vehicle.Chassis.SteeringWheel.Angle                         i16   degrees  s       + = left, as in VSS
+0x0104   Vehicle.Chassis.Accelerator.PedalPosition                   u8    percent  s
+0x0105   Vehicle.Chassis.Brake.PedalPosition                         u8    percent  s
+0x0106   Vehicle.Private.DrivingMode                                 u8    -        s       0 manual, 1 autopilot, 2 autoware
+0x0201   Vehicle.Body.Lights.DirectionIndicator.Left.IsSignaling     bool  -        s
+0x0202   Vehicle.Body.Lights.DirectionIndicator.Right.IsSignaling    bool  -        s
+0x0203   Vehicle.Body.Lights.Hazard.IsSignaling                      bool  -        s
+0x0204   Vehicle.Body.Lights.Brake.IsActive                          bool  -        s       * VSS 4 has a string enum; bool here (lit or not)
+0x0205   Vehicle.Body.Lights.Backup.IsOn                             bool  -        s
+0x0206   Vehicle.Body.Lights.Beam.High.IsOn                          bool  -        s
+0x0207   Vehicle.Private.Lights.DirectionIndicator.Left.IsLit        bool  -        s       the blink phase: lit right now
+0x0208   Vehicle.Private.Lights.DirectionIndicator.Right.IsLit       bool  -        s
+0x0301   Vehicle.Body.Horn.IsActive                                  bool  -        s
+0x0302   Vehicle.Cabin.Door.Row1.DriverSide.IsOpen                   bool  -        s
+0x0303   Vehicle.Cabin.Door.Row1.PassengerSide.IsOpen                bool  -        s
+0x0304   Vehicle.Cabin.Door.Row2.DriverSide.IsOpen                   bool  -        s
+0x0305   Vehicle.Cabin.Door.Row2.PassengerSide.IsOpen                bool  -        s
+0x0401   Vehicle.Private.External.proximity_rear                     f32   m        s       from the zone's proximity sensor; -1 = not read
+0x0402   Vehicle.Private.Zone.Proximity.Raw                          u16   -        s       VCNL4200 counts; 0xFFFF = not read
+0x0403   Vehicle.Private.Zone.Stick.X                                u16   -        s       MCP3204 0..4095, ~2048 at rest; 0xFFFF = not read
+0x0404   Vehicle.Private.Zone.Stick.Y                                u16   -        s
+0x0405   Vehicle.Private.Zone.Stick.GearFlick                        u8    -        s       ASCII P R N D, sent once per flick
+0x0406   Vehicle.Private.Zone.LoopWorkTime                           u16   us       s       the LED frame loop's work this cycle
+0x0407   Vehicle.Private.Zone.RcpFailures                            u16   -        s       failed RCP sensor cycles so far
+0x0408   Vehicle.Private.Zone.Brightness                             u8    percent  a       LED panel brightness
+0x0501   Vehicle.Private.Test.Ping                                   u32   -        s       latency probe: a node that echoes publishes it back as Pong
+0x0502   Vehicle.Private.Test.Pong                                   u32   -        s
+0x0503   Vehicle.Private.Test.Counter                                u32   -        s       rate probe
