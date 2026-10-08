@@ -74,6 +74,13 @@ struct Config {
 
 static Config gCfg;
 static Preferences gPrefs;
+static bool gZenohStarted = false;   // `zenoh off` (saved) keeps it from starting at boot
+static bool zenohAtBoot() {
+  gPrefs.begin("t1s", true);
+  const bool on = gPrefs.getBool("zenoh", true);
+  gPrefs.end();
+  return on;
+}
 static esp_eth_handle_t gEth = nullptr;
 static esp_eth_mac_t *gMac = nullptr;
 static esp_netif_t *gNetif = nullptr;
@@ -1516,6 +1523,9 @@ static void help() {
       "phy auto|10f|10h|100f|100h (mode tx) W5500 link mode\n"
       "promisc on|off             accept every frame on the wire (W5500 in tx mode, LAN8651 otherwise)\n"
       "zenoh [pause|resume|ping <hz>|rtts|blast <s> <B>|sink]  zenoh-pico peer over multicast\n"
+      "zenoh on|off               start Zenoh at boot or not (saved)\n"
+      "zone ip <alias> [endpoint] zone controller: alias address for the endpoints' subnet (default endpoint 192.168.0.50)\n"
+      "zone on|off|status|bright <0..1>  the 20 Hz loop: state UDP 5008 -> LEDs + RCP sensors -> UDP 5009 (saved)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "wifi [<ssid> <pass> | ap | off]  join a network, own AP t1s-<id>, or no radio (on reboot)\n"
       "ota <pass>                 OTA password (default t1s-ota, on reboot)\n"
@@ -1533,6 +1543,15 @@ static void handleLine(char *line) {
 
   if (netConsoleCommand(cmd, a, b, n)) return;
   if (!strcmp(cmd, "status")) cmdStatus();
+  else if (!strcmp(cmd, "zenoh") && n >= 1 && (!strcmp(a, "on") || !strcmp(a, "off"))) {
+    // saved: `zenoh off` = not started at the next boot (and paused now); `pause` alone is lost on reset
+    const bool on = !strcmp(a, "on");
+    gPrefs.begin("t1s", false);
+    gPrefs.putBool("zenoh", on);
+    gPrefs.end();
+    zenohT1sCommand(on ? "resume" : "pause");
+    Con.printf("zenoh: %s at boot (saved)%s\n", on ? "started" : "not started", on && !gZenohStarted ? " -- reboot to start it" : "");
+  }
   else if (!strcmp(cmd, "zenoh")) zenohT1sCommand(rest);
   else if (!strcmp(cmd, "zone")) zone::command(rest);
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
@@ -1719,7 +1738,7 @@ void setup() {
       uint8_t m[6];
       esp_read_mac(m, ESP_MAC_WIFI_STA);
       snprintf(zname, sizeof(zname), "t1s-eth-%02x%02x", m[4], m[5]);
-      zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff, zname);
+      if ((gZenohStarted = zenohAtBoot())) zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff, zname);
     }
   } else if (!t1sStart(!noIp)) {
     Con.println("t1s: bring-up FAILED -- console still runs; `spi 4`, `save`, `reboot` to retry slower");
@@ -1737,9 +1756,9 @@ void setup() {
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
     bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
-    zone::begin(gEth);   // zone controller groundwork (idle until `zone ip ...`)
-    // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH)
-    zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
+    zone::begin(gEth);   // zone controller (runs if `zone on` was saved, see zone.h)
+    // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH; skipped after `zenoh off`)
+    if ((gZenohStarted = zenohAtBoot())) zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
   // WiFi console + OTA last (tasks created after WiFi starts can fail for lack of internal RAM).
   // Named by the efuse MAC's last two bytes, so two boards never share a hostname.
