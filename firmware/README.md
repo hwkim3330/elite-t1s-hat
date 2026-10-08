@@ -69,6 +69,7 @@ about it before.
 |---|---|
 | `t1s_node.ino` | bring-up, PLCA, UDP echo on port 7, serial console |
 | `pins.h` | HAT signal → Elite GPIO, read off LilyGo's schematic (CS_N on IO0 for Rev C / TSN Lab's HAT, IO8 for Rev D; 1PPS in on IO40) |
+| `zone.h`, `zone_render.h`, `zone_wtlv.h` | zone controller: RCP master for LAN866x endpoints (below) |
 | `bridge.h` | bridge mode: W5500 bring-up (no IP, promiscuous) + the two-port learning forwarder |
 | `w5500_spi.h` | from the W5500 bench firmware: the W5500 SPI layer that splits reads at the RX buffer wrap (a real IDF driver bug found there) |
 | `src/lan865x/` | Espressif's `lan865x` 0.2.0 + `lan86xx_common` MAC-PHY driver, Apache-2.0, vendored with one marked patch (raw register access). See `VENDORED.md` |
@@ -239,6 +240,37 @@ set with `ethtool --set-plca-cfg <if> enable on node-id <n> node-cnt <m>`.
   `t1s-9c3c` and ran `status` over `nc`), **OTA** (espota over the AP, 1.17 MB in 14.7 s,
   `ota: done` → reboot → LAN8651 up → Zenoh session up), Zenoh peer-to-peer, `rtt`, sink
   statistics. **Not run:** sniff mode, bridge mode with this firmware, Zenoh remote config.
+
+## Zone controller (`zone.h`, branch `zone-controller`)
+
+The node can drive MCU-less 10BASE-T1S endpoints (Microchip LAN866x) over OPEN Alliance TC18 RCP (SOME/IP,
+service 0xff10), as a car's zone controller drives its body endpoints, while a central computer only sends vehicle
+state. The first target is a LAN8661 with a thumbstick (MCP3204 on SPI), a proximity sensor (VCNL4200 on I2C) and
+two 10x10 LED panels (one 20x10 RTP raw-RGB frame to UDP 5001).
+
+- The endpoints sit in another subnet. The node gets an **alias address** handled below lwIP, in the driver's
+  receive tap: it answers ARP for the alias, resolves the endpoint, and sends raw Ethernet/IPv4/UDP with
+  `esp_eth_transmit`. The node keeps its own lwIP address.
+- **20 Hz loop:** vehicle state in on UDP 5008 (any interface) → three RCP transfers (stick x/y, proximity) → LED frame
+  → sensors out on UDP 5009 to the state's sender. A stick flick becomes a gear event, sent with an event counter.
+  No state for 0.5 s gives a moving "no link" pattern. The packet formats are in the header of `zone.h`.
+- **RCP client:** one request in flight, responses matched by session. A lost transfer is resent with the same
+  WriteId. Return code 32 (WriteId out of step) reopens the handle. NOT_REACHABLE at open means a stale handle
+  (from a reset or a dead client): the handle range is closed and the open is tried again.
+- `zone_render.h` / `zone_wtlv.h` are plain C. `tests/zone_render_test.c` builds them on a PC so a reference
+  implementation can compare frames and request bytes.
+
+```
+zone ip 192.168.0.65 192.168.0.50     alias, endpoint (saved)
+zone on | off                         the loop; off closes the RCP handles and clears the panels (saved)
+zone bright 0.35 | status | reset     brightness (saved), counters, clear statistics
+zenoh on | off                        start Zenoh at boot or not (saved)
+```
+
+Measured against a LAN8661 (2026-10-08, with the timestamp build and `ptp gm` running): 20.00 frames/s on the
+wire (interval sd ≈ 1 ms), 0 RCP timeouts in 12 634 calls, round trip average 2.4 ms, 9-10 ms of work per 50 ms
+cycle. After a reset the loop runs again in ≈ 2.4 s. The gPTP slave held σ 20.5 ns over 120 s with the loop at
+full rate.
 
 ## Zenoh-pico over T1S (optional)
 
