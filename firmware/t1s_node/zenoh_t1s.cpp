@@ -33,6 +33,8 @@
 #include <esp_timer.h>
 #include <zenoh-pico.h>
 #include <Preferences.h>
+#include <lwip/sockets.h>
+#include <zenoh-pico/link/link.h>
 
 #ifndef ZENOH_TASK_PRIO
 #define ZENOH_TASK_PRIO 2      // both Zenoh tasks: below the zone tasks (4, 3) and `ptp gm` (6)
@@ -46,6 +48,10 @@ static bool sUp = false, sWanted = true;
 static char sNode[24] = "t1s-node";
 static bool sFixedName = false;
 static z_owned_session_t sSession;
+#ifdef ZENOH_RT_SESSION
+static z_owned_session_t sRtSession;
+static bool sRtUp = false;
+#endif
 static z_owned_publisher_t sHello, sSignal, sPing, sStats, sAck, sBulk;
 static z_owned_subscriber_t sPong, sCmd, sCfg, sPingAll, sBulkAll;
 static portMUX_TYPE sMbx = portMUX_INITIALIZER_UNLOCKED;
@@ -263,7 +269,11 @@ static void declareExt() {
     z_publisher_options_default(&o);
     o.priority = (z_priority_t)sExtPub[i].prio;
     o.is_express = sExtPub[i].prio <= 2;      // RealTime / InteractiveHigh: not held back for batching
-    sExtPub[i].ok = z_declare_publisher(z_session_loan(&sSession), &sExtPub[i].p, z_view_keyexpr_loan(&k), &o) == 0;
+    z_owned_session_t *ss = &sSession;
+#ifdef ZENOH_RT_SESSION
+    if (sRtUp && sExtPub[i].prio == 1) ss = &sRtSession;
+#endif
+    sExtPub[i].ok = z_declare_publisher(z_session_loan(ss), &sExtPub[i].p, z_view_keyexpr_loan(&k), &o) == 0;
   }
   for (int i = 0; i < sNExtSub; i++) {
     z_view_keyexpr_t k;
@@ -272,6 +282,27 @@ static void declareExt() {
     z_closure_sample(&c, onExt, NULL, &sExtSub[i]);
     z_declare_subscriber(z_session_loan(&sSession), &sExtSub[i].s, z_view_keyexpr_loan(&k), z_closure_sample_move(&c), NULL);
   }
+}
+
+// ---- QoS mapper on the node (t1s-zone-bench docs/QOS_MAPPER.md): zenoh-pico has neither priority-range links nor a
+// DSCP option, so the class is set here as the IP TOS of the link's socket (DSCP CS<n> -> PCP n at the next VLAN
+// hop). One session = one class: the main session carries CS5 (REALTIME: stick, vehicle state). Built with
+// -DZENOH_RT_SESSION, a second session to the same router carries the RealTime keys (priority 1: actuator targets,
+// proximity) as CS6 (SAFETY_CRITICAL); it costs a second session's RAM (~30 KB internal), hence opt-in.
+#ifndef ZENOH_TOS_MAIN
+#define ZENOH_TOS_MAIN (40 << 2)   // CS5
+#endif
+#ifndef ZENOH_TOS_RT
+#define ZENOH_TOS_RT (48 << 2)     // CS6
+#endif
+static int sTosMain = -1, sTosRt = -1;   // what the sockets have now (-1 = not set / link gone)
+static int setTos(z_owned_session_t &s, int tos) {
+  _z_session_t *zs = _Z_RC_IN_VAL(z_session_loan(&s));
+  if (!zs || zs->_tp._type != _Z_TRANSPORT_UNICAST_TYPE) return -1;   // multicast peer: no single socket per class
+  _z_link_t *l = zs->_tp._transport._unicast._common._link;
+  const _z_sys_net_socket_t *so = l ? _z_link_get_socket(l) : nullptr;
+  if (!so || so->_fd < 0) return -1;
+  return setsockopt(so->_fd, IPPROTO_IP, IP_TOS, &tos, sizeof(tos)) == 0 ? tos : -1;
 }
 
 static bool start() {
@@ -319,8 +350,27 @@ static bool start() {
   snprintf(ke, sizeof(ke), "t1s/%s/cmd", sNode);     ok &= declareSub(sCmd, ke, onCmd);
   snprintf(ke, sizeof(ke), "t1s/%s/config", sNode);  ok &= declareSub(sCfg, ke, onConfig);
   snprintf(ke, sizeof(ke), "t1s/%s/config/ack", sNode); ok &= declarePub(sAck, ke);
+#ifdef ZENOH_RT_SESSION
+  if (sRouter[0]) {
+    z_owned_config_t rc;
+    z_config_default(&rc);
+    zp_config_insert(z_config_loan_mut(&rc), Z_CONFIG_MODE_KEY, "client");
+    zp_config_insert(z_config_loan_mut(&rc), Z_CONFIG_CONNECT_KEY, sRouter);
+    z_open_options_t ro;
+    z_open_options_default(&ro);
+    ro.executor_task_attributes = &rxAttr;
+    sRtUp = z_open(&sRtSession, z_config_move(&rc), &ro) == 0;
+    Con.printf("zenoh: RealTime session %s\n", sRtUp ? "up (CS6)" : "FAILED -- RealTime keys use the main session");
+  }
+#endif
   declareExt();
-  Con.printf("zenoh: session %s\n", ok ? "up" : "declare FAILED");
+  if (sRouter[0]) {
+    sTosMain = setTos(sSession, ZENOH_TOS_MAIN);
+#ifdef ZENOH_RT_SESSION
+    if (sRtUp) sTosRt = setTos(sRtSession, ZENOH_TOS_RT);
+#endif
+  }
+  Con.printf("zenoh: session %s, TOS main 0x%02x rt 0x%02x\n", ok ? "up" : "declare FAILED", sTosMain & 0xFF, sTosRt & 0xFF);
   return ok;
 }
 
@@ -398,7 +448,17 @@ void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
     if (z_put(z_session_loan(&sSession), z_view_keyexpr_loan(&k), z_bytes_move(&b), &po) == 0) sEchoed++;
     sEchoTail = (sEchoTail + 1) % 8;
   }
-  if (sRouter[0]) return;   // client of a router: no test traffic, only the registered keys
+  if (sRouter[0]) {         // client of a router: no test traffic, only the registered keys
+    static uint32_t tTos = 0;
+    if (millis() - tTos > 5000) {   // auto-reconnect opens a new socket: set the class again
+      tTos = millis();
+      sTosMain = setTos(sSession, ZENOH_TOS_MAIN);
+#ifdef ZENOH_RT_SESSION
+      if (sRtUp) sTosRt = setTos(sRtSession, ZENOH_TOS_RT);
+#endif
+    }
+    return;
+  }
   static uint32_t tPing = 0, tHello = 0, tSig = 0, tStats = 0;
   const uint32_t now = millis();
   char b[96];
