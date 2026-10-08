@@ -18,3 +18,11 @@ bool zenohT1sTakeConfig(char *out, size_t n);
 void zenohT1sAck(const char *text);
 // `tele`'s Zenoh part: up, paused, sent, pongs, last rtt us, peers, name:pings:ago_ms,...
 void zenohT1sTele(char *out, size_t n);
+// Generic keys for other modules (ZoneLink: zonelink.h). Register before zenohT1sStartTask; they are declared when
+// the session opens. prio = Zenoh priority 1 RealTime .. 7 Background. Puts before the session is up return false.
+typedef void (*ZenohT1sCb)(const char *key, size_t keyLen, const uint8_t *payload, size_t n);
+int zenohT1sAddPub(const char *key, int prio);
+bool zenohT1sPut(int pub, const void *payload, size_t n);
+void zenohT1sAddSub(const char *keyexpr, ZenohT1sCb cb);
+// `zenoh router <locator>|none` (saved): client of a zenohd (e.g. udp/192.168.100.70:7447) instead of the multicast
+// peer; the test traffic (signal, ping, hello, stats) is then off, only registered keys flow.

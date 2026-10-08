@@ -70,6 +70,7 @@ about it before.
 | `t1s_node.ino` | bring-up, PLCA, UDP echo on port 7, serial console |
 | `pins.h` | HAT signal → Elite GPIO, read off LilyGo's schematic (CS_N on IO0 for Rev C / TSN Lab's HAT, IO8 for Rev D; 1PPS in on IO40) |
 | `zone.h`, `zone_render.h`, `zone_wtlv.h` | zone controller: RCP master for LAN866x endpoints (below) |
+| `zonelink.h` | the zone controller on Zenoh with VSS keys (`vehicle/speed`, ...) through a zenohd router (`zenoh router udp/<host>:7447`); falls back to the UDP state/sensor packets by itself when no Zenoh state arrives for 1 s |
 | `bridge.h` | bridge mode: W5500 bring-up (no IP, promiscuous) + the two-port learning forwarder |
 | `w5500_spi.h` | from the W5500 bench firmware: the W5500 SPI layer that splits reads at the RX buffer wrap (a real IDF driver bug found there) |
 | `src/lan865x/` | Espressif's `lan865x` 0.2.0 + `lan86xx_common` MAC-PHY driver, Apache-2.0, vendored with one marked patch (raw register access). See `VENDORED.md` |

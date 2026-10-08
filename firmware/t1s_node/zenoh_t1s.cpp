@@ -32,6 +32,7 @@
 #include <cmath>
 #include <esp_timer.h>
 #include <zenoh-pico.h>
+#include <Preferences.h>
 
 #ifndef ZENOH_TASK_PRIO
 #define ZENOH_TASK_PRIO 2      // both Zenoh tasks: below the zone tasks (4, 3) and `ptp gm` (6)
@@ -218,23 +219,80 @@ static bool declareSub(z_owned_subscriber_t &s, const char *ke, void (*cb)(z_loa
   return z_declare_subscriber(z_session_loan(&sSession), &s, z_view_keyexpr_loan(&k), z_closure_sample_move(&c), NULL) == 0;
 }
 
-static const char *where() {
-#ifdef ZENOH_ROUTER
-  return ZENOH_ROUTER;
-#else
-  return ZENOH_LOCATOR;
-#endif
+static char sRouter[64];
+static const char *where() { return sRouter[0] ? sRouter : ZENOH_LOCATOR; }
+
+// ---- generic keys (zenoh_t1s.h) and the router locator
+struct ExtPub { const char *key; int prio; z_owned_publisher_t p; bool ok; };
+struct ExtSub { const char *ke; ZenohT1sCb cb; z_owned_subscriber_t s; };
+static ExtPub sExtPub[16];
+static ExtSub sExtSub[4];
+static int sNExtPub = 0, sNExtSub = 0;
+int zenohT1sAddPub(const char *key, int prio) {
+  if (sNExtPub >= 16) return -1;
+  sExtPub[sNExtPub].key = key; sExtPub[sNExtPub].prio = prio; sExtPub[sNExtPub].ok = false;
+  return sNExtPub++;
+}
+void zenohT1sAddSub(const char *ke, ZenohT1sCb cb) {
+  if (sNExtSub < 4) { sExtSub[sNExtSub].ke = ke; sExtSub[sNExtSub].cb = cb; sNExtSub++; }
+}
+bool zenohT1sPut(int i, const void *p, size_t n) {
+  if (!sUp || i < 0 || i >= sNExtPub || !sExtPub[i].ok) return false;
+  z_owned_bytes_t b;
+  z_bytes_copy_from_buf(&b, (const uint8_t *)p, n);
+  return z_publisher_put(z_publisher_loan(&sExtPub[i].p), z_bytes_move(&b), NULL) == 0;
+}
+static void onExt(z_loaned_sample_t *sample, void *arg) {
+  const ExtSub *e = (const ExtSub *)arg;
+  z_view_string_t ks;
+  z_keyexpr_as_view_string(z_sample_keyexpr(sample), &ks);
+  uint8_t buf[16];
+  z_owned_string_t v;
+  z_bytes_to_string(z_sample_payload(sample), &v);
+  size_t n = z_string_len(z_string_loan(&v));
+  if (n > sizeof(buf)) n = sizeof(buf);
+  memcpy(buf, z_string_data(z_string_loan(&v)), n);
+  z_string_drop(z_string_move(&v));
+  e->cb(z_string_data(z_view_string_loan(&ks)), z_string_len(z_view_string_loan(&ks)), buf, n);
+}
+static void declareExt() {
+  for (int i = 0; i < sNExtPub; i++) {
+    z_view_keyexpr_t k;
+    z_view_keyexpr_from_str_unchecked(&k, sExtPub[i].key);
+    z_publisher_options_t o;
+    z_publisher_options_default(&o);
+    o.priority = (z_priority_t)sExtPub[i].prio;
+    o.is_express = sExtPub[i].prio <= 2;      // RealTime / InteractiveHigh: not held back for batching
+    sExtPub[i].ok = z_declare_publisher(z_session_loan(&sSession), &sExtPub[i].p, z_view_keyexpr_loan(&k), &o) == 0;
+  }
+  for (int i = 0; i < sNExtSub; i++) {
+    z_view_keyexpr_t k;
+    z_view_keyexpr_from_str_unchecked(&k, sExtSub[i].ke);
+    z_owned_closure_sample_t c;
+    z_closure_sample(&c, onExt, NULL, &sExtSub[i]);
+    z_declare_subscriber(z_session_loan(&sSession), &sExtSub[i].s, z_view_keyexpr_loan(&k), z_closure_sample_move(&c), NULL);
+  }
 }
 
 static bool start() {
   z_owned_config_t cfg;
   z_config_default(&cfg);
-  zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_MODE_KEY, "peer");
+  if (!sRouter[0]) {
+    Preferences p;
+    p.begin("t1s", true);
+    p.getString("zrouter", sRouter, sizeof(sRouter));
+    p.end();
 #ifdef ZENOH_ROUTER
-  zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_CONNECT_KEY, ZENOH_ROUTER);
-#else
-  zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_LISTEN_KEY, ZENOH_LOCATOR);
+    if (!sRouter[0]) strncpy(sRouter, ZENOH_ROUTER, sizeof(sRouter) - 1);
 #endif
+  }
+  if (sRouter[0]) {
+    zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_MODE_KEY, "client");
+    zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_CONNECT_KEY, sRouter);
+  } else {
+    zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_MODE_KEY, "peer");
+    zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_LISTEN_KEY, ZENOH_LOCATOR);
+  }
   Con.printf("zenoh: opening %s as %s ...\n", where(), sNode);
   // zenoh-pico's own read task would run at configMAX_PRIORITIES / 2 (12), above `ptp gm` (6) and the zone
   // controller's tasks (4, 3): every frame Zenoh received pre-empted them. Below all of them instead.
@@ -261,6 +319,7 @@ static bool start() {
   snprintf(ke, sizeof(ke), "t1s/%s/cmd", sNode);     ok &= declareSub(sCmd, ke, onCmd);
   snprintf(ke, sizeof(ke), "t1s/%s/config", sNode);  ok &= declareSub(sCfg, ke, onConfig);
   snprintf(ke, sizeof(ke), "t1s/%s/config/ack", sNode); ok &= declarePub(sAck, ke);
+  declareExt();
   Con.printf("zenoh: session %s\n", ok ? "up" : "declare FAILED");
   return ok;
 }
@@ -339,6 +398,7 @@ void zenohT1sLoop(bool netUp, int plcaId, int plcaCount) {
     if (z_put(z_session_loan(&sSession), z_view_keyexpr_loan(&k), z_bytes_move(&b), &po) == 0) sEchoed++;
     sEchoTail = (sEchoTail + 1) % 8;
   }
+  if (sRouter[0]) return;   // client of a router: no test traffic, only the registered keys
   static uint32_t tPing = 0, tHello = 0, tSig = 0, tStats = 0;
   const uint32_t now = millis();
   char b[96];
@@ -386,6 +446,16 @@ void zenohT1sCommand(const char *args) {
   char a[16] = {}, b[16] = {}, c[16] = {}, d[16] = {};
   const int n = sscanf(args ? args : "", "%15s %15s %15s %15s", a, b, c, d);
   if (n < 1 || !strcmp(a, "status")) { zenohT1sPrintStatus(); return; }
+  if (!strcmp(a, "router")) {                  // zenoh router <locator> | none   (saved, on reboot)
+    char loc[64] = "";
+    if (n >= 2 && strcmp(b, "none")) sscanf(args, "%*s %63s", loc);
+    Preferences p;
+    p.begin("t1s", false);
+    p.putString("zrouter", loc);
+    p.end();
+    Con.printf("zenoh: %s (saved; reboot)\n", loc[0] ? loc : "multicast peer, no router");
+    return;
+  }
   if (!strcmp(a, "pause") || !strcmp(a, "resume")) {
     sPaused = !strcmp(a, "pause");
     Con.printf("zenoh: %s\n", sPaused ? "paused (no periodic traffic, no echoes)" : "resumed");
@@ -479,6 +549,9 @@ void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_
 void zenohT1sLoop(bool, int, int) {}
 void zenohT1sPrintStatus() { Con.println("zenoh: not built in (compile with zenoh-pico)"); }
 void zenohT1sCommand(const char *) { zenohT1sPrintStatus(); }
+int zenohT1sAddPub(const char *, int) { return -1; }
+bool zenohT1sPut(int, const void *, size_t) { return false; }
+void zenohT1sAddSub(const char *, ZenohT1sCb) {}
 bool zenohT1sAvailable() { return false; }
 void zenohT1sStartTask(volatile bool *, const uint8_t *, const uint8_t *, uint8_t, const char *) {}
 bool zenohT1sTakeConfig(char *, size_t) { return false; }

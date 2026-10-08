@@ -26,6 +26,7 @@
 #include "src/lan865x/esp_eth_phy_lan865x.h"
 #include "bridge.h"
 #include "zone.h"
+#include "zonelink.h"
 #include "zenoh_t1s.h"
 #include "net_console.h"
 
@@ -1553,7 +1554,7 @@ static void handleLine(char *line) {
     Con.printf("zenoh: %s at boot (saved)%s\n", on ? "started" : "not started", on && !gZenohStarted ? " -- reboot to start it" : "");
   }
   else if (!strcmp(cmd, "zenoh")) zenohT1sCommand(rest);
-  else if (!strcmp(cmd, "zone")) zone::command(rest);
+  else if (!strcmp(cmd, "zone")) { zone::command(rest); if (!*rest || !strcmp(rest, "status")) zl::status(); }
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "phyreset")) bridge::phyReset();
@@ -1757,6 +1758,7 @@ void setup() {
     bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
     zone::begin(gEth);   // zone controller (runs if `zone on` was saved, see zone.h)
+    zl::begin();         // its ZoneLink keys (declared when a Zenoh session opens)
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH; skipped after `zenoh off`)
     if ((gZenohStarted = zenohAtBoot())) zenohT1sStartTask(&gLinkUp, &gCfg.plcaId, &gCfg.plcaCount, kPlcaOff);
   }
