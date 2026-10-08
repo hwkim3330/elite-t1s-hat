@@ -33,6 +33,9 @@
 #include <esp_timer.h>
 #include <zenoh-pico.h>
 
+#ifndef ZENOH_TASK_PRIO
+#define ZENOH_TASK_PRIO 2      // both Zenoh tasks: below the zone tasks (4, 3) and `ptp gm` (6)
+#endif
 #ifndef ZENOH_LOCATOR
 // `#iface=` is required by zenoh-pico's multicast locator check; the ESP32 port ignores its value.
 #define ZENOH_LOCATOR "udp/224.0.0.224:7447#iface=eth"
@@ -233,7 +236,17 @@ static bool start() {
   zp_config_insert(z_config_loan_mut(&cfg), Z_CONFIG_LISTEN_KEY, ZENOH_LOCATOR);
 #endif
   Con.printf("zenoh: opening %s as %s ...\n", where(), sNode);
-  const z_result_t rc = z_open(&sSession, z_config_move(&cfg), NULL);
+  // zenoh-pico's own read task would run at configMAX_PRIORITIES / 2 (12), above `ptp gm` (6) and the zone
+  // controller's tasks (4, 3): every frame Zenoh received pre-empted them. Below all of them instead.
+  static z_task_attr_t rxAttr;
+  rxAttr = {};
+  rxAttr.name = "zenoh_rx";
+  rxAttr.priority = ZENOH_TASK_PRIO;
+  rxAttr.stack_depth = 5120;
+  z_open_options_t oo;
+  z_open_options_default(&oo);
+  oo.executor_task_attributes = &rxAttr;
+  const z_result_t rc = z_open(&sSession, z_config_move(&cfg), &oo);
   if (rc < 0) { Con.printf("zenoh: open FAILED (%d)\n", (int)rc); return false; }
   char ke[64];
   bool ok = true;
@@ -458,7 +471,7 @@ void zenohT1sStartTask(volatile bool *netUp, const uint8_t *plcaId, const uint8_
     sFixedName = true;
   }
   sArgs = {netUp, plcaId, plcaCount, plcaOff};
-  xTaskCreate(zenohTask, "zenoh_t1s", 12288, nullptr, 3, &sZTask);
+  xTaskCreate(zenohTask, "zenoh_t1s", 12288, nullptr, ZENOH_TASK_PRIO, &sZTask);
 }
 
 #else  // built without T1S_WITH_ZENOH
