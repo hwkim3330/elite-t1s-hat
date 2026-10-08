@@ -131,6 +131,10 @@ static inline void zr_nolink(zr_fb fb, uint32_t tick) {
     if ((x + tick / 4) % 4 < 2) { zr_set(fb, 4, x, dim); zr_set(fb, 5, x, dim); }
 }
 
+// the brightness setting (kept as a float) as the factor the PC uses: hundredths, as a double. 0.35f is
+// 0.34999999, which would make 200 x b = 69 where the PC gets 70.
+static inline double zr_bright(float b) { return rint((double)b * 100) / 100.0; }
+
 // brightness as the bench applies it: each channel int(c * b)
 static inline void zr_scale(zr_fb out, const zr_fb in, double b) {
   for (int y = 0; y < ZR_H; y++)

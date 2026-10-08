@@ -55,7 +55,7 @@ int main(void) {
     zr_fb fb, out;
     if (sscanf(line, "nolink %u %lf", &tick, &bright) == 2) {
       zr_nolink(fb, tick);
-      zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, bright);
+      zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, zr_bright((float)bright));   // the node keeps it as a float
       hex(&out[0][0][0], sizeof out);
       continue;
     }
@@ -64,7 +64,7 @@ int main(void) {
     s.lamps = (uint8_t)lamps; s.gear = gear; s.speed = speed; s.mode = (uint8_t)mode; s.prox_m = prox;
     s.wheel_deg = wheel; s.accel = accel; s.brake = brake;
     zr_car(fb, &s, since_l, since_r);
-    zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, bright);
+    zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, zr_bright((float)bright));
     hex(&out[0][0][0], sizeof out);
   }
   return 0;

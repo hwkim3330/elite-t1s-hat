@@ -435,7 +435,7 @@ static void loopOnce(uint32_t &lastOpen) {
   } else {
     zr_nolink(fb, gFrames);
   }
-  zr_scale(gFb, (const uint8_t(*)[ZR_W][3])fb, gBright);
+  zr_scale(gFb, (const uint8_t(*)[ZR_W][3])fb, zr_bright(gBright));   // (a plain float was one step darker: 46 px)
   if (sendFrame(gFb)) gFrames++;
 }
 
