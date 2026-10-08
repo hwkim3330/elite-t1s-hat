@@ -22,7 +22,7 @@
 //           ('VST1' = the first 14 bytes, no wheel / brake pedal)
 //   sensors 'SNS1' u32 seq, u16 x, u16 y, u16 prox (0xFFFF = not read), u8 flags (bit0 I2C open, bit1 SPI
 //           open, bit2 state fresh, bits 4-7 gear event counter), char last gear event (0 = none yet),
-//           u16 loop work time this cycle (us), u16 RCP failures so far                          = 20 bytes
+//           u16 frame loop work time this cycle (us), u16 failed RCP cycles so far               = 20 bytes
 //           A new event = the counter changed, so a lost packet does not lose a gear change.
 // Settings (`zone ip`, `zone on|off`, `zone bright`) are kept in NVS.
 #pragma once
@@ -375,51 +375,85 @@ static void sensorsOut(uint16_t busyUs) {
 }
 
 // the gear selector: one flick = one shift (up D, down R, left P, right N), re-armed back inside the centre
-static void gearFlick() {
-  if (gX < 0 || gY < 0) return;
-  const float jx = (gX - 2048) / 2048.0f, jy = (gY - 2048) / 2048.0f;
+// Only fresh samples from a fully successful cycle count, and a shift needs the same direction in two cycles in a
+// row: a wrong gear sent to the car is worse than a late one (+50 ms).
+static void gearFlick(int x, int y) {
+  static char pending = 0;
+  if (x < 0 || y < 0) { pending = 0; return; }
+  const float jx = (x - 2048) / 2048.0f, jy = (y - 2048) / 2048.0f;
   const char g = jy > 0.6f ? 'D' : jy < -0.6f ? 'R' : jx < -0.6f ? 'P' : jx > 0.6f ? 'N' : 0;
-  if (g && gArmed) {
+  const bool confirmed = g && g == pending;
+  pending = g;
+  if (confirmed && gArmed) {
     gEvent = g;
     gEventCount = (gEventCount + 1) & 0x0F;
     gArmed = false;
-    Con.printf("zone: gear %c (stick x %d y %d)\n", g, gX, gY);
+    Con.printf("zone: gear %c (stick x %d y %d)\n", g, x, y);
   } else if (fabsf(jx) < 0.25f && fabsf(jy) < 0.25f) {
     gArmed = true;
   }
 }
 
-static void loopOnce(uint32_t &lastOpen) {
-  // sensors: open (retry every 2 s), read x, y, proximity; a cycle stops reading at the first failure
-  if ((gI2c == 0xFFFF || gSpi == 0xFFFF) && millis() - lastOpen > 2000) {
-    lastOpen = millis();
-    sensorsOpen();
-  }
-  bool ok = true;
-  int x = -1, y = -1, pr = -1;
-  if (gSpi != 0xFFFF) {
-    x = readAdc(0, 40);
-    if (x >= 0) y = readAdc(1, 40);
-    ok = x >= 0 && y >= 0;
-  }
-  if (ok && gI2c != 0xFFFF) {
-    pr = readProx(40);
-    ok = pr >= 0;
-  }
-  gX = x; gY = y; gProx = pr;
-  static uint32_t run = 0;           // failed cycles in a row
-  if (ok) run = 0;
-  else {
-    gFails++;
-    if (++run > 40) {                 // ~2 s of nothing: the endpoint rebooted or lost our handles -> reopen
-      run = 0;
-      Con.println("zone: no sensor answers for 2 s -- reopening");
-      gI2c = gSpi = 0xFFFF;
-      gReopens++;
+// ---- two tasks, so the LED panels never wait on RCP (a transfer can take up to 2 x its timeout when the bus
+// loses frames, and a stale-handle recovery much longer):
+//   zone      fixed 50 ms schedule: state in, ARP, the LED frame, sensors out (the latest readings)
+//   zone_rcp  the sensor reads, paced to 50 ms when all is well; after a failed cycle it waits longer (100 ms,
+//             doubling up to 800 ms) so a lossy bus is not loaded further; opens/closes the handles
+static volatile uint32_t gRcpCycleUs = 0;
+static uint32_t gRcpCycles = 0, gRcpCycleMax = 0;   // written by the RCP task only
+
+static void rcpTask(void *) {
+  uint32_t lastOpen = 0, run = 0, backoff = 0;
+  for (;;) {
+    const TickType_t t0 = xTaskGetTickCount();
+    if (!gWant || !gTargetKnown) {
+      if (gI2c != 0xFFFF || gSpi != 0xFFFF) sensorsClose();   // `zone off`: give the endpoint back
+      gX = gY = gProx = -1;
+      vTaskDelay(pdMS_TO_TICKS(50));
+      continue;
     }
+    const int64_t c0 = esp_timer_get_time();
+    if ((gI2c == 0xFFFF || gSpi == 0xFFFF) && millis() - lastOpen > 2000) {
+      lastOpen = millis();
+      sensorsOpen();
+    }
+    bool ok = true;
+    int x = -1, y = -1, pr = -1;
+    if (gSpi != 0xFFFF) {
+      x = readAdc(0, 25);
+      if (x >= 0) y = readAdc(1, 25);
+      ok = x >= 0 && y >= 0;
+    }
+    if (ok && gI2c != 0xFFFF) {
+      pr = readProx(25);
+      ok = pr >= 0;
+    }
+    if (ok) {
+      gX = x; gY = y; gProx = pr;
+      run = 0;
+      backoff = 0;
+    } else {
+      if (run >= 3) gX = gY = gProx = -1;   // a single lost cycle keeps the last readings (no flicker on the panels)
+      gFails++;
+      backoff = backoff ? (backoff < 800 ? backoff * 2 : 800) : 100;
+      if (++run > 10) {               // ~10 failed cycles in a row (seconds, with the back-off): reopen
+        run = 0;
+        Con.println("zone: no sensor answers -- reopening");
+        gI2c = gSpi = 0xFFFF;
+        gReopens++;
+      }
+    }
+    gearFlick(ok ? x : -1, ok ? y : -1);
+    const uint32_t us = (uint32_t)(esp_timer_get_time() - c0);
+    gRcpCycles++;
+    gRcpCycleUs = us;
+    if (us > gRcpCycleMax) gRcpCycleMax = us;
+    TickType_t wake = t0;
+    vTaskDelayUntil(&wake, pdMS_TO_TICKS(backoff ? backoff : 50));
   }
-  gearFlick();
-  // the picture
+}
+
+static void frameOnce() {
   zr_fb fb;
   gStFresh = gStCount && millis() - gStAt < 500;
   static bool wasFresh = false;
@@ -429,7 +463,8 @@ static void loopOnce(uint32_t &lastOpen) {
   }
   if (gStFresh) {
     zr_state s = gSt;
-    s.prox_m = gProx < 0 ? -1 : rint(zr_prox_m(gProx) * 100) / 100;   // the PC rounds to cm too
+    const int prox = gProx;
+    s.prox_m = prox < 0 ? -1 : rint(zr_prox_m(prox) * 100) / 100;   // the PC rounds to cm too
     const int64_t now = esp_timer_get_time();
     zr_car(fb, &s, (now - gEdgeL) / 1e6, (now - gEdgeR) / 1e6);
   } else {
@@ -440,11 +475,11 @@ static void loopOnce(uint32_t &lastOpen) {
 }
 
 static void task(void *) {
-  uint32_t lastArp = 0, lastOpen = 0;
+  uint32_t lastArp = 0;
   TickType_t wake = xTaskGetTickCount();
   for (;;) {
     vTaskDelayUntil(&wake, pdMS_TO_TICKS(50));
-    if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(50)) {   // fell behind (a long RCP timeout): do not burst
+    if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(50)) {   // fell behind: do not burst
       wake = xTaskGetTickCount();
       gOverruns++;
     }
@@ -464,23 +499,20 @@ static void task(void *) {
       lastArp = millis();
     }
     if (!gWant) {
-      if (gRunning) {                 // `zone off`: give the endpoint back (handles closed, panels dark)
-        sensorsClose();
+      if (gRunning) {                 // `zone off`: panels cleared here, handles closed by the RCP task
         zr_fb off = {};
         sendFrame(off);
         gRunning = false;
-        gX = gY = gProx = -1;
-        Con.println("zone: stopped (RCP handles closed, panels cleared)");
+        Con.println("zone: stopped (panels cleared, RCP handles closed)");
       }
       continue;
     }
     if (!gTargetKnown) continue;
     if (!gRunning) {
       gRunning = true;
-      lastOpen = 0;
-      Con.println("zone: running (20 Hz: state in UDP 5008, RCP sensors, LED frame, sensors out UDP 5009)");
+      Con.println("zone: running (20 Hz: state in UDP 5008, LED frame, sensors out UDP 5009; RCP sensor reads in their own task)");
     }
-    loopOnce(lastOpen);
+    frameOnce();
     const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
     gLoops++;
     gBusyUs = us;
@@ -512,6 +544,7 @@ static void begin(esp_eth_handle_t h) {
   if (!started) {
     started = true;
     xTaskCreate(task, "zone", 6144, nullptr, 4, nullptr);
+    xTaskCreate(rcpTask, "zone_rcp", 6144, nullptr, 3, nullptr);
   }
   if (gAlias)
     Con.printf("zone: alias " IPSTR " -> endpoint " IPSTR " (saved), loop %s\n", IP2STR((esp_ip4_addr_t *)&gAlias),
@@ -526,11 +559,13 @@ static void status() {
   Con.printf("zone: arp asked %lu answered %lu, endpoint replies %lu; tx %lu (fail %lu) frames, udp to alias %lu\n",
              (unsigned long)gArpAsked, (unsigned long)gArpAnswered, (unsigned long)gArpReplies,
              (unsigned long)gTxFrames, (unsigned long)gTxFail, (unsigned long)gRxUdp);
-  Con.printf("zone: loops %lu, work avg %lu us max %lu us, overruns %lu; LED frames %lu; sensors x %d y %d prox %d, "
-             "i2c 0x%04x spi 0x%04x, failed cycles %lu, reopens %lu\n",
+  Con.printf("zone: frame loop %lu, work avg %lu us max %lu us, overruns %lu; LED frames %lu\n",
              (unsigned long)gLoops, (unsigned long)(gLoops ? gBusySum / gLoops : 0), (unsigned long)gBusyMax,
-             (unsigned long)gOverruns, (unsigned long)gFrames, gX, gY, gProx, gI2c, gSpi, (unsigned long)gFails,
-             (unsigned long)gReopens);
+             (unsigned long)gOverruns, (unsigned long)gFrames);
+  Con.printf("zone: rcp loop %lu, last %lu us max %lu us; sensors x %d y %d prox %d, i2c 0x%04x spi 0x%04x, "
+             "failed cycles %lu, reopens %lu\n",
+             (unsigned long)gRcpCycles, (unsigned long)gRcpCycleUs, (unsigned long)gRcpCycleMax, gX, gY, gProx, gI2c, gSpi,
+             (unsigned long)gFails, (unsigned long)gReopens);
   Con.printf("zone: rcp calls %lu, timeouts %lu, round trip avg %lu us max %lu us; state in %lu (bad %lu), %s, "
              "sensors out %lu; last gear %c (#%u)\n",
              (unsigned long)gRcpCalls, (unsigned long)gRcpTimeouts,
@@ -563,7 +598,7 @@ static void command(const char *a) {
   if (!strcmp(a, "off")) {
     gWant = false;
     save();
-    for (int i = 0; i < 100 && gRunning; i++) vTaskDelay(pdMS_TO_TICKS(10));
+    for (int i = 0; i < 200 && (gRunning || gI2c != 0xFFFF || gSpi != 0xFFFF); i++) vTaskDelay(pdMS_TO_TICKS(10));
     return status();
   }
   if (sscanf(a, "bright %f", &f) == 1) {
@@ -572,12 +607,12 @@ static void command(const char *a) {
     return status();
   }
   if (!strcmp(a, "reset")) {               // statistics
-    gLoops = gFails = gOverruns = gBusyMax = 0; gBusySum = 0;
+    gLoops = gFails = gOverruns = gBusyMax = gRcpCycles = gRcpCycleMax = gReopens = 0; gBusySum = 0;
     gRcpCalls = gRcpTimeouts = gRcpUsMax = 0; gRcpUsSum = 0;
     return status();
   }
   if (!strcmp(a, "rcp") || !strncmp(a, "sense", 5)) {
-    if (gWant || gRunning) { Con.println("zone: the loop owns the endpoint -- `zone off` first"); return; }
+    if (gWant || gRunning || gI2c != 0xFFFF || gSpi != 0xFFFF) { Con.println("zone: the loop owns the endpoint -- `zone off` first"); return; }
     if (!gTargetKnown) { Con.println("zone: endpoint not resolved yet"); return; }
     if (!strcmp(a, "rcp")) {
       const uint8_t rc = call(ZW_GET_STATUS, nullptr, 0, 500);
