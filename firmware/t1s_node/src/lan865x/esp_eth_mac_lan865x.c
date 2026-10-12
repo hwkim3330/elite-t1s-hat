@@ -875,6 +875,22 @@ static esp_err_t emac_lan865x_set_peer_pause_ability(esp_eth_mac_t *mac, uint32_
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+/* LOCAL PATCH (t1s_hat): a tap on every transmit attempt (frame, length, result, TX credits seen), so the
+ * firmware can count what it hands to the chip by class and tell a host-side burst from a chip-side one. */
+static esp_eth_mac_lan865x_tx_tap_t s_tx_tap = NULL;
+void esp_eth_mac_lan865x_set_tx_tap(esp_eth_mac_lan865x_tx_tap_t tap)
+{
+    s_tx_tap = tap;
+}
+/* LOCAL PATCH (t1s_hat): a gate in front of the chip: when it returns false the frame is refused with
+ * ESP_ERR_INVALID_STATE before any SPI traffic (the firmware closes it while the node has no PLCA transmit
+ * opportunity, so the MAC is not handed frames it can only retry into excessive collisions). */
+static esp_eth_mac_lan865x_tx_gate_t s_tx_gate = NULL;
+void esp_eth_mac_lan865x_set_tx_gate(esp_eth_mac_lan865x_tx_gate_t gate)
+{
+    s_tx_gate = gate;
+}
+
 static esp_err_t emac_lan865x_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_t length)
 {
     esp_err_t ret = ESP_OK;
@@ -882,13 +898,22 @@ static esp_err_t emac_lan865x_transmit(esp_eth_mac_t *mac, uint8_t *buf, uint32_
     ESP_LOGD(TAG, "Transmitting %" PRIu32 " bytes", length);
 
     lan865x_oa_bufsts_reg_t oa_bufsts;
+    oa_bufsts.val = 0;
+    if (s_tx_gate && !s_tx_gate(buf, length)) {
+        ret = ESP_ERR_INVALID_STATE;
+        goto err;
+    }
     ESP_GOTO_ON_ERROR(lan865x_read_reg(emac, LAN865X_MMS_OA, LAN865X_OA_BUFSTS_REG_ADDR, &oa_bufsts.val), err,  TAG, "OA_BUFSTS read failed");
     if (oa_bufsts.txc < (length + LAN865X_DATA_BLOCK_SIZE - 1) / LAN865X_DATA_BLOCK_SIZE) {
         ESP_LOGD(TAG, "Not enough transmit credits available");
-        return ESP_ERR_NO_MEM;
+        ret = ESP_ERR_NO_MEM;
+        goto err;
     }
     ESP_GOTO_ON_FALSE(lan865x_frame_transmit(emac, buf, length) == ESP_OK, ESP_FAIL, err, TAG, "frame transmit failed at SPI");
 err:
+    if (s_tx_tap) {
+        s_tx_tap(buf, length, ret, oa_bufsts.txc);
+    }
     return ret;
 }
 

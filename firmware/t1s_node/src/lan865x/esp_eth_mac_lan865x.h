@@ -66,6 +66,14 @@ typedef void (*esp_eth_mac_lan865x_rx_ts_cb_t)(const uint8_t *frame, uint32_t le
 typedef bool (*esp_eth_mac_lan865x_tx_ts_cb_t)(const uint8_t *frame, uint32_t len);
 void esp_eth_mac_lan865x_set_ts_hooks(esp_eth_mac_lan865x_rx_ts_cb_t rx, esp_eth_mac_lan865x_tx_ts_cb_t tx);
 
+/* LOCAL PATCH (t1s_hat): called after every transmit attempt with its result (ESP_OK, ESP_ERR_NO_MEM = not enough
+ * TX credits, else an SPI error) and the TX credits the chip reported just before. Driver context: keep short. */
+typedef void (*esp_eth_mac_lan865x_tx_tap_t)(const uint8_t *frame, uint32_t len, esp_err_t result, uint8_t credits);
+void esp_eth_mac_lan865x_set_tx_tap(esp_eth_mac_lan865x_tx_tap_t tap);
+/* LOCAL PATCH (t1s_hat): return false to refuse a frame (ESP_ERR_INVALID_STATE) before it reaches the chip. */
+typedef bool (*esp_eth_mac_lan865x_tx_gate_t)(const uint8_t *frame, uint32_t len);
+void esp_eth_mac_lan865x_set_tx_gate(esp_eth_mac_lan865x_tx_gate_t gate);
+
 #ifdef __cplusplus
 }
 #endif

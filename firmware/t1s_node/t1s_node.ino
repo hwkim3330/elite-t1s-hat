@@ -84,6 +84,8 @@ static bool zenohAtBoot() {
 }
 static esp_eth_handle_t gEth = nullptr;
 static esp_eth_mac_t *gMac = nullptr;
+static void onDrvTx(const uint8_t *f, uint32_t len, esp_err_t r, uint8_t credits);   // `txstat`, below
+static bool txGate(const uint8_t *f, uint32_t len);                                  // `txgate`, below
 static esp_netif_t *gNetif = nullptr;
 static esp_netif_t *gLan = nullptr;   // mode node: the W5500 next to T1S
 static volatile bool gLanUp = false;
@@ -322,6 +324,8 @@ static bool t1sStart(bool withNetif) {
       // 25 and 22 asked both run 20 (80/4), 18 and 15 give 16, 12 gives 11.43
       gSpiActualMhz = hz / 1e6f;
       Con.printf("t1s: SPI %u MHz asked, %.2f MHz actual\n", mhz, gSpiActualMhz);
+      esp_eth_mac_lan865x_set_tx_tap(onDrvTx);
+      esp_eth_mac_lan865x_set_tx_gate(txGate);
       break;
     }
     gMac->del(gMac);
@@ -693,6 +697,14 @@ static void evtTask(void *) {
     socklen_t fl = sizeof(from);
     if (recvfrom(s, &m, sizeof(m), 0, (sockaddr *)&from, &fl) != (int)sizeof(m)) continue;
     if ((m.magic & 0xFFFFFF00u) != (kEvtMagic & 0xFFFFFF00u)) continue;
+    // at most 20 acks a second (a sender makes a few per second): whatever happens to the receive path, the
+    // answers can never outgrow the questions by more than that
+    static uint32_t winMs = 0, inWin = 0, dropped = 0;
+    if (millis() - winMs >= 1000) {
+      if (dropped) Con.printf("evt: %lu acks not sent (more than 20/s)\n", (unsigned long)dropped);
+      winMs = millis(); inWin = 0; dropped = 0;
+    }
+    if (++inWin > 20) { dropped++; continue; }
     sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);   // ack first, then act
     const uint8_t code = m.magic & 0xFF;
     if (code == 4) gHornUntil = millis() + 600;
@@ -757,6 +769,183 @@ static const uint8_t *udpOf(const uint8_t *f, uint32_t len, uint16_t &sport, uin
   dport = (u[2] << 8) | u[3];
   return u + 8;
 }
+// ---------------------------------------------------------------- what this node hands to the chip (`txstat`)
+// Counted in the driver's transmit call (LOCAL PATCH tx tap): accepted / refused for want of TX credits /
+// failed at SPI, by class. Compared with the frames/s a sniffer sees from this node, it tells a burst made
+// here (the counts climb with it) from one made in the chip (the wire climbs, the counts do not).
+enum { kTxArp, kTxEvt, kTxPtp, kTxZone, kTxOther, kTxClasses };
+static const char *const kTxClassName[kTxClasses] = {"arp", "evt", "ptp", "zone", "other"};
+struct TxStat { volatile uint32_t ok[kTxClasses], nomem, err; volatile uint8_t credMin; };
+static TxStat gTx = {{0}, 0, 0, 0xFF};
+static volatile uint32_t gWireTx = 0, gXcol = 0, gTxAbort = 0, gTos = 0, gBeacons = 0, gGated = 0;
+static volatile uint32_t gRxAll = 0, gRxArp = 0, gRxEvt = 0;   // what the T1S side received (driver tap)
+static void onDrvTx(const uint8_t *f, uint32_t len, esp_err_t r, uint8_t credits) {
+  if (r == ESP_ERR_NO_MEM) { gTx.nomem = gTx.nomem + 1; return; }
+  if (r == ESP_ERR_INVALID_STATE) { gGated = gGated + 1; return; }
+  if (r != ESP_OK) { gTx.err = gTx.err + 1; return; }
+  if (credits < gTx.credMin) gTx.credMin = credits;
+  int c = kTxOther;
+  uint16_t sp = 0, dp = 0;
+  if (len >= 14 && f[12] == 0x08 && f[13] == 0x06) c = kTxArp;
+  else if (len >= 14 && f[12] == 0x88 && f[13] == 0xF7) c = kTxPtp;
+  else if (udpOf(f, len, sp, dp)) c = (sp == 5006 || dp == 5006) ? kTxEvt : (dp == 5001 || dp == 6800) ? kTxZone
+                                    : (sp == 5007 || dp == 5007) ? kTxPtp : kTxOther;
+  gTx.ok[c] = gTx.ok[c] + 1;
+}
+// The chip's own view, sampled every 250 ms by `txWatchTask` (the counters clear on read, so only that task reads
+// them): MAC statistics (MMS 1 0x210..0x213) = frames that really left, excessive-collision drops (a frame that
+// found no transmit opportunity in 16 tries), aborts; PLCA counters (MMS 4 0x20..0x27) = transmit opportunities this
+// node had, BEACONs it heard.
+static volatile uint32_t gGateCloses = 0, gFloodTrips = 0;
+static volatile bool gGateOn = true;          // `txgate on|off`
+// The transmit gate. A PLCA node with no transmit opportunity (a follower whose ID is >= the coordinator's node
+// count, or a bus with no coordinator) still has its MAC try every frame it is given: the PLCA layer answers each
+// try with a logical collision, and after 16 the MAC drops the frame (XCOL). Meanwhile the stack keeps answering
+// what it hears (event acks, ARP), so the chip spends the whole starved time retrying stale replies. So: while the
+// node has had no transmit opportunity for a whole 250 ms window, frames are refused at the driver (counted as
+// `gated`), and the chip is not handed replies nobody can use; the first window with an opportunity opens it again.
+static volatile bool gGateClosed = false;
+RTC_NOINIT_ATTR static uint32_t gFloodBoot;   // "FLOO" after a flood reboot (survives esp_restart, not power-up)
+static bool txGate(const uint8_t *, uint32_t) { return !gGateClosed; }
+static void txWatchTask(void *) {
+  esp_eth_mac_lan865x_write_reg(gMac, 4, 0x20, 0x3);   // CTRCTRL: TOCTRE | BCNCTRE
+  bool toSeen = false;                                   // the counter works (it is 0 until enabled)
+  uint32_t closedAt = 0, gatedAtClose = 0, lastHost = 0, floodWin = 0;
+  for (;;) {
+    vTaskDelay(pdMS_TO_TICKS(250));
+    uint32_t v = 0, h = 0, l = 0, dWire = 0, dTo = 0, dBcn = 0;
+    if (esp_eth_mac_lan865x_read_reg(gMac, 1, 0x213, &v) == ESP_OK) dWire = v;          // STATS11 TFTX
+    if (esp_eth_mac_lan865x_read_reg(gMac, 1, 0x212, &v) == ESP_OK) gXcol = gXcol + (v & 0xFF);    // STATS10 XCOL
+    if (esp_eth_mac_lan865x_read_reg(gMac, 1, 0x210, &v) == ESP_OK) gTxAbort = gTxAbort + (v & 0xFF);  // STATS8 TXAIE
+    if (esp_eth_mac_lan865x_read_reg(gMac, 1, 0x211, &v) == ESP_OK)
+      gTxAbort = gTxAbort + (v >> 24) + ((v >> 16) & 0xFF) + ((v >> 8) & 0xFF);         // STATS9 TXAEE TXFUR TXBUR
+    if (esp_eth_mac_lan865x_read_reg(gMac, 4, 0x24, &h) == ESP_OK && esp_eth_mac_lan865x_read_reg(gMac, 4, 0x25, &l) == ESP_OK)
+      dTo = (h & 0xFFFF) << 16 | (l & 0xFFFF);
+    if (esp_eth_mac_lan865x_read_reg(gMac, 4, 0x26, &h) == ESP_OK && esp_eth_mac_lan865x_read_reg(gMac, 4, 0x27, &l) == ESP_OK)
+      dBcn = (h & 0xFFFF) << 16 | (l & 0xFFFF);
+    gWireTx = gWireTx + dWire;
+    gTos = gTos + dTo;
+    gBeacons = gBeacons + dBcn;
+    if (dTo) toSeen = true;
+    if (gFloodBoot == 0x464C4F4Fu && millis() > 120000) gFloodBoot = 0;   // 2 min without a flood: armed again
+    const bool starved = gGateOn && toSeen && plcaWanted() && dTo == 0;
+    if (starved && !gGateClosed) {
+      gGateClosed = true;
+      gGateCloses = gGateCloses + 1;
+      closedAt = millis();
+      gatedAtClose = gGated;
+      Con.printf("txgate: closed (no PLCA transmit opportunity in 250 ms, beacons %lu)\n", (unsigned long)dBcn);
+    } else if (!starved && gGateClosed) {
+      gGateClosed = false;
+      Con.printf("txgate: open after %lu ms, %lu frames refused meanwhile\n", (unsigned long)(millis() - closedAt),
+                 (unsigned long)(gGated - gatedAtClose));
+    }
+    // Flood watch. (1) The chip sends far more than the stack hands it: not what anyone asked for. The bench has
+    // seen this once a node got its slot back after a long starve (~7500 frames/s, 80 % of the bus, until a
+    // reboot), and a reboot is the only cure known, so with the gate on it reboots (the PLCA setting comes back from
+    // NVS). (2) The stack itself hands over a flood: reported, by class, so the next one says where it came from.
+    uint32_t host = 0;
+    for (int i = 0; i < kTxClasses; i++) host += gTx.ok[i];
+    const uint32_t dHost = host - lastHost;
+    lastHost = host;
+    static uint32_t hostWin = 0, lastArp = 0, lastEvt = 0, lastOther = 0;
+    if (dWire > 3 * dHost + 50) {                         // > 200 frames/s more than handed over
+      if (++floodWin == 8) {                              // for 2 s
+        gFloodTrips = gFloodTrips + 1;
+        Con.printf("flood: the chip sent %lu frames in 250 ms, the stack handed it %lu%s\n", (unsigned long)dWire,
+                   (unsigned long)dHost, gGateOn ? " -- rebooting (the known cure)" : "");
+        // no reboot loop: a flood again within 2 min of a flood reboot is only reported
+        if (gGateOn && !(gFloodBoot == 0x464C4F4Fu && millis() < 120000)) {
+          gFloodBoot = 0x464C4F4Fu;
+          vTaskDelay(pdMS_TO_TICKS(200));
+          esp_restart();
+        }
+      }
+    } else floodWin = 0;
+    if (dHost > 100) {                                    // > 400 frames/s from the stack
+      if (++hostWin == 8)
+        Con.printf("flood: the stack hands the chip %lu frames/s (arp %lu evt %lu other %lu)\n", (unsigned long)(dHost * 4),
+                   (unsigned long)(gTx.ok[kTxArp] - lastArp) * 4, (unsigned long)(gTx.ok[kTxEvt] - lastEvt) * 4,
+                   (unsigned long)(gTx.ok[kTxOther] - lastOther) * 4);
+    } else hostWin = 0;
+    lastArp = gTx.ok[kTxArp]; lastEvt = gTx.ok[kTxEvt]; lastOther = gTx.ok[kTxOther];
+  }
+}
+
+static void cmdTxstat(const char *a) {
+  if (!strcmp(a, "reset")) {
+    memset((void *)&gTx, 0, sizeof(gTx));
+    gTx.credMin = 0xFF;
+    gWireTx = gXcol = gTxAbort = gTos = gBeacons = gGated = 0;
+  }
+  static uint32_t lastMs = 0, lastSum = 0;
+  uint32_t sum = 0;
+  for (int i = 0; i < kTxClasses; i++) sum += gTx.ok[i];
+  const uint32_t now = millis();
+  const float rate = lastMs && now > lastMs ? (sum - lastSum) * 1000.0f / (now - lastMs) : 0;
+  lastMs = now; lastSum = sum;
+  char line[320];
+  int o = snprintf(line, sizeof(line), "txstat: ok %lu", (unsigned long)sum);
+  for (int i = 0; i < kTxClasses; i++) o += snprintf(line + o, sizeof(line) - o, " %s %lu", kTxClassName[i], (unsigned long)gTx.ok[i]);
+  snprintf(line + o, sizeof(line) - o, " nomem %lu err %lu gated %lu credmin %u rate %.1f rx %lu rxarp %lu rxevt %lu"
+           " wire %lu xcol %lu abort %lu to %lu beacon %lu gate %s closes %lu flood %lu",
+           (unsigned long)gTx.nomem, (unsigned long)gTx.err, (unsigned long)gGated, gTx.credMin, rate,
+           (unsigned long)gRxAll, (unsigned long)gRxArp, (unsigned long)gRxEvt, (unsigned long)gWireTx,
+           (unsigned long)gXcol, (unsigned long)gTxAbort, (unsigned long)gTos, (unsigned long)gBeacons,
+           !gGateOn ? "off" : gGateClosed ? "closed" : "open", (unsigned long)gGateCloses, (unsigned long)gFloodTrips);
+  Con.println(line);
+}
+static void cmdTxgate(const char *a) {
+  if (!strcmp(a, "on") || !strcmp(a, "off")) {
+    gGateOn = !strcmp(a, "on");
+    if (!gGateOn) gGateClosed = false;
+  }
+  Con.printf("txgate: %s%s\n", gGateOn ? "on" : "off", gGateClosed ? " (closed now)" : "");
+}
+
+// `txstall <ms> [plca]`: test hooks for the "starved node gets its slot back" case.
+//   txstall <ms>       holds the MAC's transmitter off (MAC_NCR.TXEN, MMS 1 0x0000 bit 3) while the stack keeps
+//                      sending: the chip's TX buffer fills, the driver sees no credits. The node stays coordinator.
+//   txstall <ms> plca  takes the PHY out of every transmit opportunity instead: PLCA ID 9 (> any count), not saved,
+//                      so there is no coordinator on the bus and every PLCA node (this one included) waits with its
+//                      frames queued -- what the node lives through as ID 4 under a coordinator of 2. Then it goes
+//                      back to the saved setting (coordinator 0): the same follower -> coordinator switch the bench
+//                      makes when it leaves the car-sound layout. Only this node is ever touched, so there can never
+//                      be two coordinators; a reset during the test brings the saved setting back.
+static volatile uint32_t gStallMs = 0;
+static volatile bool gStallPlca = false;
+static void stallTask(void *) {
+  uint32_t ncr = 0;
+  if (gStallPlca) {
+    uint8_t id = 9;
+    esp_eth_ioctl(gEth, (esp_eth_io_cmd_t)LAN86XX_ETH_CMD_S_PLCA_ID, &id);
+    Con.printf("txstall: PLCA ID 9 (no transmit opportunity) for %lu ms\n", (unsigned long)gStallMs);
+  } else {
+    esp_eth_mac_lan865x_read_reg(gMac, 1, 0x0000, &ncr);
+    esp_eth_mac_lan865x_write_reg(gMac, 1, 0x0000, ncr & ~0x8u);
+    Con.printf("txstall: transmitter off for %lu ms (MAC_NCR 0x%08lx)\n", (unsigned long)gStallMs, (unsigned long)ncr);
+  }
+  vTaskDelay(pdMS_TO_TICKS(gStallMs));
+  if (gStallPlca) {
+    Con.printf("txstall: back to the saved PLCA setting: %s\n", esp_err_to_name(applyPlca()));
+    printPlca();
+  } else {
+    esp_eth_mac_lan865x_read_reg(gMac, 1, 0x0000, &ncr);
+    esp_eth_mac_lan865x_write_reg(gMac, 1, 0x0000, ncr | 0x8u);
+    Con.printf("txstall: transmitter back on (MAC_NCR 0x%08lx)\n", (unsigned long)(ncr | 0x8u));
+  }
+  gStallMs = 0;
+  vTaskDelete(nullptr);
+}
+static void cmdTxstall(const char *a) {
+  if (!gMac) { Con.println("txstall: no LAN8651"); return; }
+  if (gStallMs) { Con.println("txstall: already stalled"); return; }
+  gStallPlca = strstr(a, "plca") != nullptr;
+  if (gStallPlca && (!plcaWanted() || gCfg.plcaId != 0)) { Con.println("txstall plca: only on the saved coordinator"); return; }
+  gStallMs = constrain(atoi(a), 100, 900000);
+  xTaskCreate(stallTask, "txstall", 3072, nullptr, 1, nullptr);
+}
+
 // gPTP slave (`ptp gm`): an 802.1AS grandmaster's two-step Sync, here a Microchip LAN9360. t2 is the
 // Sync's ingress stamp from this chip; t1 the preciseOriginTimestamp (+ correction) of its Follow_Up.
 struct GmPair { volatile uint16_t s2, s1; volatile int64_t t2, t1; };
@@ -802,6 +991,12 @@ static void onRxStamp(const uint8_t *f, uint32_t len, uint64_t ts) {
 static HwStamp gDrvRx[64];
 static void onDrvRx(esp_eth_handle_t h, const uint8_t *f, uint32_t len) {
   zone::rx(h, f, len);
+  if (h == gEth) {
+    uint16_t sp0 = 0, dp0 = 0;
+    if (len >= 22 && f[12] == 0x08 && f[13] == 0x06) gRxArp = gRxArp + 1;
+    else if (udpOf(f, len, sp0, dp0) && dp0 == 5006) gRxEvt = gRxEvt + 1;
+    gRxAll = gRxAll + 1;
+  }
   uint16_t sp, dp;
   const uint8_t *p = udpOf(f, len, sp, dp);
   if (!p || dp != 5007) return;
@@ -1605,6 +1800,9 @@ static void handleLine(char *line) {
                h ? esp_err_to_name(esp_eth_ioctl(h, ETH_CMD_S_PROMISCUOUS, &on)) : "no interface");
   }
   else if (!strcmp(cmd, "tele")) cmdTele(n >= 1 ? a : "200");
+  else if (!strcmp(cmd, "txstat")) cmdTxstat(n >= 1 ? a : "");
+  else if (!strcmp(cmd, "txgate")) cmdTxgate(n >= 1 ? a : "");
+  else if (!strcmp(cmd, "txstall") && n >= 1) cmdTxstall(rest);
   else if (!strcmp(cmd, "identify")) {
     const int secs = n >= 1 ? constrain(atoi(a), 1, 120) : 15;
     gIdentifyUntil = millis() + secs * 1000;
@@ -1757,6 +1955,7 @@ void setup() {
     xTaskCreate(evtTask, "udp_evt", 4096, nullptr, 5, nullptr);
     bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
+    if (gMac) xTaskCreate(txWatchTask, "txwatch", 3072, nullptr, 3, nullptr);   // `txstat`, `txgate`
     zone::begin(gEth);   // zone controller (runs if `zone on` was saved, see zone.h)
     zl::begin();         // its ZoneLink keys (declared when a Zenoh session opens)
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH; skipped after `zenoh off`)
