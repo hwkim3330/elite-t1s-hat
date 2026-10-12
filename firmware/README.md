@@ -309,7 +309,7 @@ captures; it removes the PC sender's own jitter; frames sent ≥ 1.15 ms after t
 | p99 | 319 / 442 / 590 µs | **211 / 273 / 240 µs** |
 | p99.9 | 785 / 553 / 652 µs | **357 / 415 / 450 µs** |
 | frames > 300 µs | 1.67 / 1.68 / 2.62 % | **0.20 / 0.62 / 0.41 %** |
-| max | 3680 / 1924 / 1425 µs | 547 / 2478 / 3962 µs (single frames, not after an LED frame) |
+| max | 3680 / 1924 / 1425 µs | 547 / 2478 / 3962 µs (single frames; the schedule does not cap the worst case) |
 | LED frames, interval σ / longest gap | 0.22–0.40 ms / 51.3 ms | 0.67–0.74 ms / 53.2 ms |
 | gPTP offset σ | 17.2–20.5 ns | 12.4–15.6 ns |
 
