@@ -1301,6 +1301,7 @@ static void gmTask(void *) {
 //   ptp       last gPTP offset (ns) or na ptpage  s since that offset (na if never)
 //   zone      off|wait|run                led   LED frames sent       rcp / rcpto   RCP calls / timeouts
 //   sns       sensor packets sent         state fresh|stale|none (vehicle state in)   heap  internal RAM free (B)
+//   align     on|off (zone align)         aaf   AAF frames seen on the bus
 static volatile uint16_t gStatMs = 0;
 static void statTask(void *) {
   for (;;) {
@@ -1317,14 +1318,15 @@ static void statTask(void *) {
       snprintf(age, sizeof(age), "%lu", (unsigned long)((millis() - gGmOffAt) / 1000));
     } else { strcpy(ptp, "na"); strcpy(age, "na"); }
     Con.printf("stat: ms=%lu plca=%s link=%s gate=%s tx=%lu wire=%lu gated=%lu nomem=%lu xcol=%lu flood=%lu rx=%lu "
-               "ptp=%s ptpage=%s zone=%s led=%lu rcp=%lu rcpto=%lu sns=%lu state=%s heap=%u\n",
+               "ptp=%s ptpage=%s zone=%s led=%lu rcp=%lu rcpto=%lu sns=%lu state=%s heap=%u align=%s aaf=%lu\n",
                (unsigned long)millis(), plca, gLinkUp ? "up" : "down", !gGateOn ? "off" : gGateClosed ? "closed" : "open",
                (unsigned long)host, (unsigned long)gWireTx, (unsigned long)gGated, (unsigned long)gTx.nomem,
                (unsigned long)gXcol, (unsigned long)gFloodTrips, (unsigned long)gRxAll, ptp, age,
                zone::gRunning ? "run" : zone::gWant ? "wait" : "off", (unsigned long)zone::gFrames,
                (unsigned long)zone::gRcpCalls, (unsigned long)zone::gRcpTimeouts, (unsigned long)zone::gSnsSeq,
                !zone::gStCount ? "none" : zone::gStFresh ? "fresh" : "stale",
-               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), zone::gAlign ? "on" : "off",
+               (unsigned long)zone::gAafSeen);
   }
 }
 static void cmdStat(const char *a) {
@@ -1796,6 +1798,7 @@ static void help() {
       "zenoh on|off               start Zenoh at boot or not (saved)\n"
       "zone ip <alias> [endpoint] zone controller: alias address for the endpoints' subnet (default endpoint 192.168.0.50)\n"
       "zone on|off|status|bright <0..1>  the 20 Hz loop: state UDP 5008 -> LEDs + RCP sensors -> UDP 5009 (saved)\n"
+      "zone align on|off [us [ms]] LED frame right after an AAF frame (+us), RCP at +ms (20), one 50 ms timer (saved)\n"
       "reg r|w <mms> <addr> [val] raw LAN8651 register (hex addr/val)\n"
       "wifi [<ssid> <pass> | ap | off]  join a network, own AP t1s-<id>, or no radio (on reboot)\n"
       "ota <pass>                 OTA password (default t1s-ota, on reboot)\n"

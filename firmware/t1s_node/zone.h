@@ -24,7 +24,7 @@
 //           open, bit2 state fresh, bits 4-7 gear event counter), char last gear event (0 = none yet),
 //           u16 frame loop work time this cycle (us), u16 failed RCP cycles so far               = 20 bytes
 //           A new event = the counter changed, so a lost packet does not lose a gear change.
-// Settings (`zone ip`, `zone on|off`, `zone bright`) are kept in NVS.
+// Settings (`zone ip`, `zone on|off`, `zone bright`, `zone align`) are kept in NVS.
 #pragma once
 #include <Arduino.h>
 #include <Preferences.h>
@@ -62,6 +62,35 @@ static volatile bool gWant = false;     // asked for (`zone on`, saved)
 static volatile bool gRunning = false;  // the task's own view: handles may be open
 static float gBright = 0.35f;
 static Preferences gZPrefs;
+
+// ---- transmit schedule (`zone align on|off [delay_us [rcp_ms]]`, saved; on by default). With it on:
+//  - one esp_timer ticks every 50 ms; both tasks run from that tick, so the period is exact and the phase between
+//    the LED frame and the RCP reads is fixed (no longer whatever the two tasks got at start)
+//  - the LED frame waits (at most kAafWaitUs) for the next AAF frame seen on the bus and goes right after it, into
+//    the free part of the 1.333 ms audio period, instead of in front of the next AAF frame; while no AAF arrives
+//    (stream off), it goes on the tick
+//  - the RCP reads start gRcpOffsetMs (20) after the tick, far from the LED frame: the LAN8661 answers ~0.7 ms late
+//    while it is clocking a frame out to its panels (up to ~4 ms after it)
+// Off = the old behaviour (two free-running 50 ms tick loops), kept for A/B.
+static volatile bool gAlign = true;
+static volatile uint32_t gAlignDelayUs = 0;     // extra wait after the AAF frame before the LED frame (tuning)
+static volatile uint32_t gRcpOffsetMs = 20;      // RCP cycle start after the tick (LED frame at ~+1..4 ms)
+static const int64_t kAafWaitUs = 3000;
+static const uint32_t kBitTick = 1, kBitAaf = 2;
+static esp_timer_handle_t gTick = nullptr;
+static TaskHandle_t gZoneTask = nullptr, gRcpTask = nullptr;
+static volatile int64_t gGridUs = 0;            // the last tick
+static volatile bool gAafArm = false;
+static volatile int64_t gAafLastUs = 0, gAafRxUs = 0, gLedTxUs = 0;
+static volatile uint32_t gAafSeen = 0;
+static uint32_t gAlAligned = 0, gAlMissed = 0, gAlNoStream = 0, gAlWaitMax = 0, gAlLatMax = 0;
+static uint64_t gAlWaitSum = 0, gAlLatSum = 0;
+static int32_t gRcpAfterLedMin = INT32_MAX, gRcpAfterLedMax = 0;   // us from the LED frame to an RCP cycle start
+static void IRAM_ATTR tickCb(void *) {
+  gGridUs = esp_timer_get_time();
+  if (gZoneTask) xTaskNotify(gZoneTask, kBitTick, eSetBits);
+  if (gRcpTask) xTaskNotify(gRcpTask, kBitTick, eSetBits);
+}
 
 static uint16_t csum(const uint8_t *p, int n) {
   uint32_t s = 0;
@@ -118,7 +147,21 @@ static bool udp(uint8_t *buf, uint16_t sport, uint16_t dport, uint16_t plen) {
 
 // from the driver's receive tap: ARP for the alias / from the target, UDP to the alias
 static void rx(esp_eth_handle_t h, const uint8_t *f, uint32_t len) {
-  if (h != gZEth || !gAlias || len < 42) return;
+  if (h != gZEth || len < 42) return;
+  // IEEE 1722 AAF (the PC's car sounds), 802.1Q-tagged or not: the bus clock for the LED frame
+  if ((f[12] == 0x81 && f[13] == 0x00 && f[16] == 0x22 && f[17] == 0xF0 && f[18] == 0x02) ||
+      (f[12] == 0x22 && f[13] == 0xF0 && f[14] == 0x02)) {
+    const int64_t now = esp_timer_get_time();
+    gAafLastUs = now;
+    gAafSeen = gAafSeen + 1;
+    if (gAafArm) {
+      gAafArm = false;
+      gAafRxUs = now;
+      if (gZoneTask) xTaskNotify(gZoneTask, kBitAaf, eSetBits);
+    }
+    return;
+  }
+  if (!gAlias) return;
   if (f[12] == 0x08 && f[13] == 0x06) {
     const uint16_t op = (f[20] << 8) | f[21];
     uint32_t sip, tip;
@@ -175,7 +218,10 @@ static bool sendFrame(const zr_fb fb) {
   memcpy(p + n, fb, sizeof(zr_fb));
   n += sizeof(zr_fb);
   gRtpSeq++;
-  return udp(buf, 5001, 5001, n);
+  const int64_t t = esp_timer_get_time();
+  const bool ok = udp(buf, 5001, 5001, n);
+  if (ok) gLedTxUs = t;
+  return ok;
 }
 
 // ---- RCP client (zone_wtlv.h): one request, wait for its response; rc 0 = OK, 0xFE = timeout
@@ -423,6 +469,11 @@ static void rcpTask(void *) {
       continue;
     }
     const int64_t c0 = esp_timer_get_time();
+    if (gLedTxUs && c0 - gLedTxUs < 100000) {
+      const int32_t d = (int32_t)(c0 - gLedTxUs);
+      if (d < gRcpAfterLedMin) gRcpAfterLedMin = d;
+      if (d > gRcpAfterLedMax) gRcpAfterLedMax = d;
+    }
     if ((gI2c == 0xFFFF || gSpi == 0xFFFF) && millis() - lastOpen > 2000) {
       lastOpen = millis();
       sensorsOpen();
@@ -458,12 +509,27 @@ static void rcpTask(void *) {
     gRcpCycles++;
     gRcpCycleUs = us;
     if (us > gRcpCycleMax) gRcpCycleMax = us;
-    TickType_t wake = t0;
-    vTaskDelayUntil(&wake, pdMS_TO_TICKS(backoff ? backoff : 50));
+    if (gAlign) {
+      // the shared tick: skip ticks while backing off, then start gRcpOffsetMs after the tick
+      uint32_t skip = backoff ? backoff / 50 - 1 : 0;
+      for (;;) {
+        uint32_t v = 0;
+        xTaskNotifyWait(0, 0xFFFFFFFF, &v, pdMS_TO_TICKS(200));
+        if (!gAlign) break;
+        if (!(v & kBitTick)) continue;
+        if (skip == 0) break;
+        skip--;
+      }
+      const int64_t left = gGridUs + (int64_t)gRcpOffsetMs * 1000 - esp_timer_get_time();
+      if (left > 0) vTaskDelay(pdMS_TO_TICKS((left + 500) / 1000));
+    } else {
+      TickType_t wake = t0;
+      vTaskDelayUntil(&wake, pdMS_TO_TICKS(backoff ? backoff : 50));
+    }
   }
 }
 
-static void frameOnce() {
+static void frameOnce(bool aligned) {
   zr_fb fb;
   gStFresh = gStCount && millis() - gStAt < 500;
   static bool wasFresh = false;
@@ -484,6 +550,32 @@ static void frameOnce() {
     zr_nolink(fb, gFrames);
   }
   zr_scale(gFb, (const uint8_t(*)[ZR_W][3])fb, zr_bright(gBright));   // (a plain float was one step darker: 46 px)
+  if (aligned) {
+    const int64_t t0 = esp_timer_get_time();
+    if (gAafLastUs && t0 - gAafLastUs < 200000) {           // the audio stream is on: go right after its next frame
+      ulTaskNotifyValueClear(nullptr, kBitAaf);
+      gAafArm = true;
+      uint32_t v = 0;
+      for (;;) {
+        const int64_t left = t0 + kAafWaitUs - esp_timer_get_time();
+        if (left <= 0) break;
+        xTaskNotifyWait(0, kBitAaf, &v, pdMS_TO_TICKS((left + 999) / 1000));
+        if (v & kBitAaf) break;
+      }
+      gAafArm = false;
+      if (v & kBitAaf) {
+        if (gAlignDelayUs) delayMicroseconds(gAlignDelayUs);
+        const uint32_t w = (uint32_t)(gAafRxUs - gGridUs), l = (uint32_t)(esp_timer_get_time() - gAafRxUs);
+        gAlAligned++;
+        gAlWaitSum += w; if (w > gAlWaitMax) gAlWaitMax = w;
+        gAlLatSum += l; if (l > gAlLatMax) gAlLatMax = l;
+      } else {
+        gAlMissed++;
+      }
+    } else {
+      gAlNoStream++;
+    }
+  }
   if (sendFrame(gFb)) gFrames++;
 }
 
@@ -491,10 +583,19 @@ static void task(void *) {
   uint32_t lastArp = 0;
   TickType_t wake = xTaskGetTickCount();
   for (;;) {
-    vTaskDelayUntil(&wake, pdMS_TO_TICKS(50));
-    if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(50)) {   // fell behind: do not burst
+    const bool aligned = gAlign;
+    if (aligned) {                    // the esp_timer tick (a late task takes the pending tick once: no burst)
+      uint32_t v = 0;
+      xTaskNotifyWait(0, 0xFFFFFFFF, &v, pdMS_TO_TICKS(200));
+      if (!(v & kBitTick)) continue;
+      if (esp_timer_get_time() - gGridUs > 50000) gOverruns++;
       wake = xTaskGetTickCount();
-      gOverruns++;
+    } else {
+      vTaskDelayUntil(&wake, pdMS_TO_TICKS(50));
+      if (xTaskGetTickCount() - wake > pdMS_TO_TICKS(50)) {   // fell behind: do not burst
+        wake = xTaskGetTickCount();
+        gOverruns++;
+      }
     }
     const int64_t t0 = esp_timer_get_time();
     stateIn();
@@ -525,7 +626,7 @@ static void task(void *) {
       gRunning = true;
       Con.println("zone: running (20 Hz: state in UDP 5008, LED frame, sensors out UDP 5009; RCP sensor reads in their own task)");
     }
-    frameOnce();
+    frameOnce(aligned);
     const uint32_t us = (uint32_t)(esp_timer_get_time() - t0);
     gLoops++;
     gBusyUs = us;
@@ -541,6 +642,9 @@ static void save() {
   gZPrefs.putULong("target", gTarget);
   gZPrefs.putBool("on", gWant);
   gZPrefs.putFloat("bright", gBright);
+  gZPrefs.putBool("align", gAlign);
+  gZPrefs.putULong("aldly", gAlignDelayUs);
+  gZPrefs.putULong("alrcp", gRcpOffsetMs);
   gZPrefs.end();
 }
 
@@ -552,16 +656,39 @@ static void begin(esp_eth_handle_t h) {
   gTarget = gZPrefs.getULong("target", 0);
   gWant = gZPrefs.getBool("on", false) && gAlias && gTarget;
   gBright = gZPrefs.getFloat("bright", 0.35f);
+  gAlign = gZPrefs.getBool("align", true);
+  gAlignDelayUs = gZPrefs.getULong("aldly", 0);
+  gRcpOffsetMs = gZPrefs.getULong("alrcp", 20);
   gZPrefs.end();
+  // AVTP multicast (the AAF stream) through the MAC's hash filter, in case the MAC is not promiscuous
+  // (`ptp gm` makes it so); adds one entry, changes nothing else
+  uint8_t avtp[6] = {0x91, 0xE0, 0xF0, 0x00, 0xFE, 0x01};
+  esp_eth_ioctl(h, ETH_CMD_ADD_MAC_FILTER, avtp);
   static bool started = false;
   if (!started) {
     started = true;
-    xTaskCreate(task, "zone", 6144, nullptr, 4, nullptr);
-    xTaskCreate(rcpTask, "zone_rcp", 6144, nullptr, 3, nullptr);
+    xTaskCreate(task, "zone", 6144, nullptr, 4, &gZoneTask);
+    xTaskCreate(rcpTask, "zone_rcp", 6144, nullptr, 3, &gRcpTask);
+    const esp_timer_create_args_t ta = {.callback = tickCb, .arg = nullptr, .dispatch_method = ESP_TIMER_TASK,
+                                        .name = "zone_tick", .skip_unhandled_events = true};
+    if (esp_timer_create(&ta, &gTick) == ESP_OK) esp_timer_start_periodic(gTick, 50000);
   }
   if (gAlias)
     Con.printf("zone: alias " IPSTR " -> endpoint " IPSTR " (saved), loop %s\n", IP2STR((esp_ip4_addr_t *)&gAlias),
                IP2STR((esp_ip4_addr_t *)&gTarget), gWant ? "on" : "off");
+}
+
+static void alignStatus() {
+  const int64_t age = gAafLastUs ? esp_timer_get_time() - gAafLastUs : -1;
+  Con.printf("zone: align %s (delay %lu us, rcp at +%lu ms); AAF seen %lu (%s); LED frames after an AAF %lu, "
+             "no AAF in %lld ms %lu, stream off %lu; tick->AAF avg %lu max %lu us, AAF->send avg %lu max %lu us; "
+             "rcp start after LED min %ld max %ld us\n",
+             gAlign ? "on" : "off", (unsigned long)gAlignDelayUs, (unsigned long)gRcpOffsetMs, (unsigned long)gAafSeen,
+             age < 0 ? "never" : age < 200000 ? "stream on" : "stream off", (unsigned long)gAlAligned,
+             (long long)(kAafWaitUs / 1000), (unsigned long)gAlMissed, (unsigned long)gAlNoStream,
+             (unsigned long)(gAlAligned ? gAlWaitSum / gAlAligned : 0), (unsigned long)gAlWaitMax,
+             (unsigned long)(gAlAligned ? gAlLatSum / gAlAligned : 0), (unsigned long)gAlLatMax,
+             (long)(gRcpAfterLedMin == INT32_MAX ? -1 : gRcpAfterLedMin), (long)gRcpAfterLedMax);
 }
 
 static void status() {
@@ -585,9 +712,10 @@ static void status() {
              (unsigned long)(gRcpCalls > gRcpTimeouts ? gRcpUsSum / (gRcpCalls - gRcpTimeouts) : 0), (unsigned long)gRcpUsMax,
              (unsigned long)gStCount, (unsigned long)gStBad,
              gStCount ? (gStFresh ? "fresh" : "stale") : "none yet", (unsigned long)gSnsSeq, gEvent ? gEvent : '-', gEventCount);
+  alignStatus();
 }
 
-// zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | reset | rcp | sense [n] [keep]
+// zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep]
 static void command(const char *a) {
   char s1[20], s2[20];
   float f;
@@ -619,7 +747,26 @@ static void command(const char *a) {
     save();
     return status();
   }
+  unsigned dly = 0, rcpms = 0;
+  char w[8] = "";
+  if (!strncmp(a, "align", 5)) {            // zone align [on|off] [delay_us [rcp_ms]]
+    const int k = sscanf(a, "align %7s %u %u", w, &dly, &rcpms);
+    if (k >= 1 && (!strcmp(w, "on") || !strcmp(w, "off"))) {
+      gAlign = !strcmp(w, "on");
+      if (k >= 2) gAlignDelayUs = dly > 1300 ? 1300 : dly;
+      if (k >= 3) gRcpOffsetMs = rcpms > 45 ? 45 : rcpms;
+      gAlAligned = gAlMissed = gAlNoStream = gAlWaitMax = gAlLatMax = 0; gAlWaitSum = gAlLatSum = 0;
+      gRcpAfterLedMin = INT32_MAX; gRcpAfterLedMax = 0;
+      save();
+    } else if (k >= 1) {
+      Con.println("zone align [on|off] [delay_us [rcp_ms]]");
+      return;
+    }
+    return alignStatus();
+  }
   if (!strcmp(a, "reset")) {               // statistics
+    gAlAligned = gAlMissed = gAlNoStream = gAlWaitMax = gAlLatMax = 0; gAlWaitSum = gAlLatSum = 0;
+    gRcpAfterLedMin = INT32_MAX; gRcpAfterLedMax = 0;
     gLoops = gFails = gOverruns = gBusyMax = gRcpCycles = gRcpCycleMax = gReopens = 0; gBusySum = 0;
     gRcpCalls = gRcpTimeouts = gRcpUsMax = 0; gRcpUsSum = 0;
     return status();
@@ -646,7 +793,7 @@ static void command(const char *a) {
     if (strstr(a, "keep") == nullptr) sensorsClose();
     return;
   }
-  Con.println("zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | reset | rcp | sense [n] [keep]");
+  Con.println("zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep]");
 }
 
 }  // namespace zone
