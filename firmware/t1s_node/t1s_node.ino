@@ -26,6 +26,7 @@
 #include "src/lan865x/esp_eth_phy_lan865x.h"
 #include "bridge.h"
 #include "zone.h"
+#include <esp_heap_caps.h>
 #include "zonelink.h"
 #include "zenoh_t1s.h"
 #include "net_console.h"
@@ -1078,6 +1079,7 @@ static int64_t takeTxStamp() {
 // (TI + TISUBN: 40 ns per 25 MHz tick in 2^-24 ns units). Offset printed = master - node, ns.
 static volatile bool gLockRun = false;
 static volatile int64_t gLockOffNs = 0;   // last second's offset, for `tele`
+static volatile uint32_t gGmOffAt = 0;      // millis of the last `ptp gm` offset, for `stat`
 static char gLockHost[16];
 static int gLockSecs = 60;
 static float gLockKp = 0.2f, gLockKi = 0.02f;   // measured best on this bench (W5500 master): see README
@@ -1227,6 +1229,8 @@ static void gmTask(void *) {
   const double kp = gGmKp, ki = gGmKi;
   double integ = 0, freq = 0;
   bool stepped = false;
+  int est = 0;                 // after the step: 0 = take a first offset, 1 = second one gives the frequency, 2 = PI
+  int64_t estOff = 0;
   uint16_t lastSeq = 0;
   bool haveLast = false;
   tsuFreq(0);
@@ -1248,9 +1252,29 @@ static void gmTask(void *) {
     if (!stepped || off > 1000000000LL || off < -1000000000LL) {
       tsuStep(off);
       stepped = true;
+      est = 0;
       Con.printf("ptpg: %d step %lld ns\n", sec, (long long)off);
       for (auto &g : gGm) g.t1 = g.t2 = 0;                        // pairs from before the step are stale
       continue;
+    }
+    // Frequency first: the two crystals differ by ~34 ppm here, and a PI loop starting from 0 ppb let the offset
+    // run to +-2 ms and took ~90 s to settle after every restart. Two offsets one second apart give the drift
+    // directly; start the integrator there and step out what has built up (ptp4l does the same).
+    if (est == 0) { estOff = off; est = 1; continue; }
+    if (est == 1) {
+      est = 2;
+      const int64_t drift = off - estOff;                         // ns per second = ppb
+      if (drift > -200000 && drift < 200000) {
+        integ = (double)drift;
+        freq = integ;
+        tsuFreq(freq);
+        // the median pair is ~0.5 s old and the clock ran at the old rate since: step out that too
+        const int64_t now = off + drift / 2;
+        tsuStep(now);
+        for (auto &g : gGm) g.t1 = g.t2 = 0;
+        Con.printf("ptpg: %d frequency %+lld ppb from two offsets, step %lld ns\n", sec, (long long)drift, (long long)now);
+        continue;
+      }
     }
     integ += ki * off;
     freq = kp * off + integ;
@@ -1258,12 +1282,58 @@ static void gmTask(void *) {
     if (freq < -200000) freq = -200000;
     tsuFreq(freq);
     gLockOffNs = off;
+    gGmOffAt = millis();
     Con.printf("ptpg: %d offset %lld ns spread %lld ns freq %+.0f ppb (%d/8)\n", sec, (long long)off,
                (long long)(offs[n - 1] - offs[0]), freq, n);
   }
   Con.printf("ptpg: done, holding %+.0f ppb\n", freq);
   gGmRun = false;
   vTaskDelete(nullptr);
+}
+
+// `stat [ms|off]`: one machine-readable line per period, for a console that only has the USB serial (a Mac: no
+// AF_PACKET, and the EVB's PLCA needs Linux). Format, kept stable: "stat:" then space-separated key=value pairs,
+// never reordered, new keys only appended. Counters are totals since boot (or `txstat reset`).
+//   ms        uptime                      plca  id/count as set, or off     link  up|down
+//   gate      open|closed|off             tx    frames the stack handed the chip    wire  frames the chip sent
+//   gated     refused by the gate         nomem refused for want of TX credits      xcol  excessive-collision drops
+//   flood     flood-watch trips           rx    frames received on T1S
+//   ptp       last gPTP offset (ns) or na ptpage  s since that offset (na if never)
+//   zone      off|wait|run                led   LED frames sent       rcp / rcpto   RCP calls / timeouts
+//   sns       sensor packets sent         state fresh|stale|none (vehicle state in)   heap  internal RAM free (B)
+static volatile uint16_t gStatMs = 0;
+static void statTask(void *) {
+  for (;;) {
+    const uint16_t ms = gStatMs;
+    if (!ms) { vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+    vTaskDelay(pdMS_TO_TICKS(ms));
+    uint32_t host = 0;
+    for (int i = 0; i < kTxClasses; i++) host += gTx.ok[i];
+    char plca[12], ptp[24], age[16];
+    if (plcaWanted()) snprintf(plca, sizeof(plca), "%u/%u", gCfg.plcaId, gCfg.plcaCount);
+    else snprintf(plca, sizeof(plca), "off");
+    if (gGmOffAt) {
+      snprintf(ptp, sizeof(ptp), "%lld", (long long)gLockOffNs);
+      snprintf(age, sizeof(age), "%lu", (unsigned long)((millis() - gGmOffAt) / 1000));
+    } else { strcpy(ptp, "na"); strcpy(age, "na"); }
+    Con.printf("stat: ms=%lu plca=%s link=%s gate=%s tx=%lu wire=%lu gated=%lu nomem=%lu xcol=%lu flood=%lu rx=%lu "
+               "ptp=%s ptpage=%s zone=%s led=%lu rcp=%lu rcpto=%lu sns=%lu state=%s heap=%u\n",
+               (unsigned long)millis(), plca, gLinkUp ? "up" : "down", !gGateOn ? "off" : gGateClosed ? "closed" : "open",
+               (unsigned long)host, (unsigned long)gWireTx, (unsigned long)gGated, (unsigned long)gTx.nomem,
+               (unsigned long)gXcol, (unsigned long)gFloodTrips, (unsigned long)gRxAll, ptp, age,
+               zone::gRunning ? "run" : zone::gWant ? "wait" : "off", (unsigned long)zone::gFrames,
+               (unsigned long)zone::gRcpCalls, (unsigned long)zone::gRcpTimeouts, (unsigned long)zone::gSnsSeq,
+               !zone::gStCount ? "none" : zone::gStFresh ? "fresh" : "stale",
+               (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+  }
+}
+static void cmdStat(const char *a) {
+  static bool started = false;
+  if (!strcmp(a, "off") || !strcmp(a, "0")) { gStatMs = 0; Con.println("stat: off"); return; }
+  const int ms = atoi(a);
+  gStatMs = (uint16_t)constrain(ms > 0 ? ms : 1000, 100, 60000);
+  if (!started) started = xTaskCreate(statTask, "stat", 4096, nullptr, 1, nullptr) == pdPASS;
+  Con.printf("stat: every %u ms\n", (unsigned)gStatMs);
 }
 
 static void cmdPtpGm(const char *rest) {
@@ -1712,6 +1782,10 @@ static void help() {
       "counters                   TC6 status/errors, TX credits, RX chunks, PLCA beacons\n"
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "tele [ms|off]              one telemetry line every ms (wheel, ctl, received command, ptp, zenoh peers)\n"
+      "stat [ms|off]              one machine-readable key=value status line every ms (default 1000)\n"
+      "txstat [reset]             frames handed to the chip by class, refusals, chip wire count, XCOL, TO/BEACON counts\n"
+      "txgate [on|off]            refuse frames while the node has no PLCA transmit opportunity (default on)\n"
+      "txstall <ms> [plca]        test: MAC transmitter off, or no transmit opportunity (PLCA ID 9, not saved)\n"
       "ble [on|off]               BLE console (Nordic UART service; saved, on reboot)\n"
       "phyreset                   (mode tx) reset the W5500 PHY with autonegotiation, print its link\n"
       "rxlog                      the last frames received: source, destination, type (and this board's MACs)\n"
@@ -1802,6 +1876,7 @@ static void handleLine(char *line) {
   else if (!strcmp(cmd, "tele")) cmdTele(n >= 1 ? a : "200");
   else if (!strcmp(cmd, "txstat")) cmdTxstat(n >= 1 ? a : "");
   else if (!strcmp(cmd, "txgate")) cmdTxgate(n >= 1 ? a : "");
+  else if (!strcmp(cmd, "stat")) cmdStat(n >= 1 ? a : "1000");
   else if (!strcmp(cmd, "txstall") && n >= 1) cmdTxstall(rest);
   else if (!strcmp(cmd, "identify")) {
     const int secs = n >= 1 ? constrain(atoi(a), 1, 120) : 15;

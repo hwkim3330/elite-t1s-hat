@@ -273,6 +273,61 @@ wire (interval sd ≈ 1 ms), 0 RCP timeouts in 12 634 calls, round trip average 
 cycle. After a reset the loop runs again in ≈ 2.4 s. The gPTP slave held σ 20.5 ns over 120 s with the loop at
 full rate.
 
+Again on 2026-10-12, on the bus with the PC's car-sound stream (750 AAF frames/s, 22 % load) and the node as PLCA
+coordinator 0/8, 120 s: RCP 60.0 requests/s, **7 188 of 7 188 answered** (round trip p50 0.70 ms, p99 0.95 ms on the
+wire; 0 timeouts in 7 248 calls), LED frames 20.01/s with no gap over 51 ms, sensor packets 20.0/s, frame loop 0
+overruns (work max 3.4 ms), gPTP σ 20.3 ns (max 52 ns).
+
+### A node without a transmit opportunity: gate, flood watch, counters
+
+On the bench the node is sometimes put where PLCA gives it no transmit opportunity (ID 4 under a coordinator of 2,
+for a layout that must keep two other nodes quiet). Its MAC still tries every frame it is handed; the PLCA layer
+answers each try with a logical collision and after 16 the MAC drops the frame (excessive collisions). Meanwhile the
+stack keeps answering what it hears (event acks, ARP), so the chip spends the whole starved time on stale replies.
+Twice, when such a node got its slot back, it then sent ~7 500 frames/s of acks and ARP (80 % of the bus) until it
+was rebooted. Since 2026-10-12:
+
+- **Transmit gate** (`txgate on|off`, on by default): the PHY's PLCA transmit-opportunity counter is read every
+  250 ms; a window without a single opportunity closes the gate, and frames are then refused at the driver
+  (`gated`), before the chip sees them. The first window with an opportunity opens it again (`txgate: open after
+  N ms, M frames refused meanwhile`). As a coordinator the node has an opportunity every cycle (~27 000/s).
+- **Event acks** are capped at 20/s.
+- **Flood watch**: the chip's own count of transmitted frames (MAC STATS11) is compared with what the stack handed it.
+  More than 200 frames/s extra for 2 s prints `flood: the chip sent ...` and reboots (the only known cure; not twice
+  within 2 min). A flood made by the stack itself (> 400 frames/s handed over) is reported by class.
+- `txstat [reset]`: frames handed to the chip by class (arp, evt, ptp, zone, other), refused (`nomem`: no TX
+  credits, `gated`), the chip's own `wire` count, excessive collisions (`xcol`), aborts, transmit opportunities and
+  BEACONs seen.
+- `txstall <ms> [plca]` (test): holds the MAC transmitter off, or (`plca`) takes the node out of every opportunity
+  with PLCA ID 9 (not saved: a reset brings the saved setting back; only allowed on the saved coordinator, so there
+  is never a second coordinator; the whole bus waits meanwhile, since no node then sees a BEACON).
+
+What was measured, and what was not:
+
+| test (2026-10-12, node = coordinator 0/8) | result |
+|---|---|
+| `txstall 30000` / `120000` (MAC transmitter off) | the chip kept the frames (credits 48 → 29 → 2, then 258 refused for want of credits); on release it sent the backlog (~20 frames) and went back to 0.5 frames/s: **no flood** |
+| `txstall 180000 plca` (no transmit opportunity, no coordinator) | all PLCA nodes silent; on release normal at once: **no flood**, no excessive collisions counted |
+| the real case (a coordinator present, this node's ID ≥ its count, for ~15 min) | **not reproduced**: it needs the PC's adapter made coordinator, which was not done here. The gate closes in exactly that case (BEACONs, no opportunity), so the chip is never fed while starved; the flood watch reports and reboots if a flood happens anyway, with the chip-vs-stack counts that say where it came from |
+
+### Serial status for a console without Linux (macOS)
+
+The USB serial is the one link a Mac has to the bus: the PC's T1S adapter (EVB-LAN8670-USB) needs a Linux kernel
+driver for PLCA, and a Mac has no AF_PACKET for the console's sniffer. What a Mac console needs from the node:
+
+- Open the port without touching DTR/RTS (115200 baud; pyserial: set `port`/`baudrate`, then `open()`). Toggling them
+  passes through DTR=0/RTS=1, which resets the ESP32-S3. On macOS the port is `/dev/cu.usbmodem*` (use `cu.`, not
+  `tty.`); USB VID 303a, PID 1001, serial number = the board's MAC.
+- `stat [ms|off]` prints one line per period, meant for parsing and kept stable (keys only appended, never reordered):
+  `stat: ms=.. plca=0/8 link=up gate=open tx=.. wire=.. gated=.. nomem=.. xcol=.. flood=.. rx=.. ptp=-12 ptpage=0
+  zone=run led=.. rcp=.. rcpto=.. sns=.. state=fresh heap=..`. The key list is in `t1s_node.ino` above `statTask`.
+- Other lines worth parsing, all one line each: `ptpg: <n> offset <ns> ns spread <ns> ns freq <ppb> ppb (<pairs>/8)`,
+  `txgate: closed|open ...`, `flood: ...`, `zone: ...`, and the boot banner `== T1S HAT node` (a reset: `ptp on` and
+  `ptp gm` are gone and must be sent again, the zone loop comes back by itself from NVS).
+- The zone controller itself needs no PC on the bus: vehicle state arrives on UDP 5008 from any interface, so a Mac
+  can feed it over the board's RJ45 (`lan dhcp`/`lan <ip>`), and the sensors come back to the sender on UDP 5009.
+- Never send `plca ...` from a generic console: two coordinators jam the bus. The bench console refuses it.
+
 ## Zenoh-pico over T1S (optional)
 
 Build with zenoh-pico on the library path and two flags. The node then joins Zenoh over its wired
@@ -401,6 +456,12 @@ Sync on ingress; the Follow_Up carries t1. On a Microchip LAN9360 grandmaster (a
 the HAT's clock held **σ 39 ns** (mean −8 ns, worst 73 ns) after 60 s — hardware stamps on both ends,
 versus 6.6–10.6 µs against the software-stamping W5500 board. The MAC is set promiscuous (the Sync goes to
 01:80:C2:00:00:0E); no path delay yet. Data: `esp32-t1s-bridge/docs/t1s_results/gptp_lan9360`.
+
+**Start-up (2026-10-12).** The loop used to start from 0 ppb: with the crystals ~34 ppm apart the offset ran out to
+±2 ms and took ~90 s to settle after every reset (the bench console restarts `ptp gm` after each one). Now, after
+the first step, two offsets one second apart give the frequency (`ptpg: 2 frequency -33993 ppb from two offsets`),
+the integrator starts there and the ~0.5 s of drift since the median pair is stepped out too: the first PI offset
+was −59 ns, and every offset from the third second on stayed under 100 ns.
 
 **Zenoh and the servo (2026-10-07).** Zenoh's 5 Hz ping shares the bus with the exchanges: paired
 60 s runs gave σ 32.7 µs with it, 19.2 µs with `zenoh pause` on both boards (3 of 3 pairs,
