@@ -266,6 +266,8 @@ zone ip 192.168.0.65 192.168.0.50     alias, endpoint (saved)
 zone on | off                         the loop; off closes the RCP handles and clears the panels (saved)
 zone bright 0.35 | status | reset     brightness (saved), counters, clear statistics
 zenoh on | off                        start Zenoh at boot or not (saved)
+zone align on | off [us [ms]]         transmit schedule, below (saved, on by default; us = extra wait after the
+                                      AAF frame, default 0; ms = RCP start after the tick, default 20)
 ```
 
 Measured against a LAN8661 (2026-10-08, with the timestamp build and `ptp gm` running): 20.00 frames/s on the
@@ -277,6 +279,43 @@ Again on 2026-10-12, on the bus with the PC's car-sound stream (750 AAF frames/s
 coordinator 0/8, 120 s: RCP 60.0 requests/s, **7 188 of 7 188 answered** (round trip p50 0.70 ms, p99 0.95 ms on the
 wire; 0 timeouts in 7 248 calls), LED frames 20.01/s with no gap over 51 ms, sensor packets 20.0/s, frame loop 0
 overruns (work max 3.4 ms), gPTP σ 20.3 ns (max 52 ns).
+
+### Transmit schedule on a bus with an audio stream (`zone align`)
+
+On a segment that also carries a periodic audio stream (IEEE 1722 AAF, 750 frames/s), the node's 716 B LED frame
+holds the line for 0.6 ms. Sent at a random phase, it lands in front of an audio frame about once per LED frame and
+delays that frame by up to 0.6 ms plus a cycle. And the LAN8661 answers RCP requests late while it clocks a frame
+out to its panels (up to ~4 ms after the LED frame). `zone align on` (the default) schedules both:
+
+- **One 50 ms `esp_timer`** drives the LED task and the RCP task. The period is exact; the old tick-based loops ran
+  bimodal 49.83 / 50.17 ms, and the phase between the two tasks was whatever they got at start.
+- **LED frame right after an AAF frame.** After the tick the task builds the frame, then waits for the next AAF frame
+  the driver's receive tap sees (802.1Q + EtherType 0x22f0, subtype 0x02; the AVTP multicast 91:e0:f0:00:fe:01 is
+  added to the MAC's hash filter, so this works without promiscuous mode) and sends at once (median 20 µs after the
+  frame came off SPI). The frame then fills the free part of the 1.333 ms audio period. No AAF within 3 ms: it goes
+  anyway; no AAF for 200 ms (stream off): it goes on the tick.
+- **RCP reads at +20 ms** after the tick (measured 15–19 ms after the LED frame).
+
+`zone status` / `zone align` print the state and counters (LED frames sent after an AAF, sent without one, tick →
+AAF wait, AAF → send, RCP start after the LED frame); `stat` has `align=` and `aaf=`. Off restores the free-running
+loops for comparison.
+
+Measured 2026-10-12 on the bench (PC streaming car sounds, node coordinator 0/8, PC on ID 7), off and on interleaved,
+3 rounds each. Delay of each audio frame from the PC's send to this node's receive stamp (the same frame in two
+captures; it removes the PC sender's own jitter; frames sent ≥ 1.15 ms after the previous one):
+
+| | off (3 rounds) | **on (3 rounds)** |
+|---|---|---|
+| p99 | 319 / 442 / 591 µs | **211 / 274 / 241 µs** |
+| p99.9 | 837 / 560 / 654 µs | **361 / 425 / 504 µs** |
+| frames > 300 µs | 1.67 / 1.68 / 2.62 % | **0.20 / 0.62 / 0.41 %** |
+| LED frames, interval σ / longest gap | 0.22–0.40 ms / 51.3 ms | 0.67–0.74 ms / 53.2 ms |
+| gPTP offset σ | 17.2–20.5 ns | 12.4–15.6 ns |
+
+The LED interval spreads more with the schedule on: 50 ms is 37.5 audio periods, so consecutive frames alternate
+between two phases of the audio grid (±0.67 ms); the rate is still 20.00/s. RCP, with the start held at +3 ms instead
+of +20 ms (`zone align on 0 3`, 2 rounds each): SPI X round trip p50 1.96–1.99 ms instead of 0.70 ms, 34 % of
+calls over 1 ms instead of 0.5–0.6 %.
 
 ### A node without a transmit opportunity: gate, flood watch, counters
 
@@ -320,7 +359,7 @@ driver for PLCA, and a Mac has no AF_PACKET for the console's sniffer. What a Ma
   `tty.`); USB VID 303a, PID 1001, serial number = the board's MAC.
 - `stat [ms|off]` prints one line per period, meant for parsing and kept stable (keys only appended, never reordered):
   `stat: ms=.. plca=0/8 link=up gate=open tx=.. wire=.. gated=.. nomem=.. xcol=.. flood=.. rx=.. ptp=-12 ptpage=0
-  zone=run led=.. rcp=.. rcpto=.. sns=.. state=fresh heap=..`. The key list is in `t1s_node.ino` above `statTask`.
+  zone=run led=.. rcp=.. rcpto=.. sns=.. state=fresh heap=.. align=on aaf=..`. The key list is in `t1s_node.ino` above `statTask`.
 - Other lines worth parsing, all one line each: `ptpg: <n> offset <ns> ns spread <ns> ns freq <ppb> ppb (<pairs>/8)`,
   `txgate: closed|open ...`, `flood: ...`, `zone: ...`, and the boot banner `== T1S HAT node` (a reset: `ptp on` and
   `ptp gm` are gone and must be sent again, the zone loop comes back by itself from NVS).
