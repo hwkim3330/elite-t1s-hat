@@ -547,7 +547,8 @@ static void frameOnce(bool aligned) {
     const int64_t now = esp_timer_get_time();
     zr_car(fb, &s, (now - edgeL) / 1e6, (now - edgeR) / 1e6);
   } else {
-    zr_nolink(fb, gFrames);
+    const int prox = gProx;
+    zr_nolink(fb, gFrames, prox < 0 ? -1 : rint(zr_prox_m(prox) * 100) / 100);
   }
   zr_scale(gFb, (const uint8_t(*)[ZR_W][3])fb, zr_bright(gBright));   // (a plain float was one step darker: 46 px)
   if (aligned) {

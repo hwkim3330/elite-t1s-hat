@@ -67,6 +67,14 @@ static inline void zr_arrow(zr_fb fb, int panel, double since) {
       if (ZR_ARROW[y][x] == '#' && (9 - x) < cols) zr_set(fb, y, panel == 0 ? x : ZR_W - 1 - x, ZR_AMBER);
 }
 
+// proximity warning: a red bar on the top row, longer the closer (from 1 m), the same in both states
+static inline void zr_prox_bar(zr_fb fb, double prox_m) {
+  if (prox_m >= 0 && prox_m < 1.0) {
+    const int n = (int)rint((1.0 - prox_m) * ZR_W);
+    for (int x = 0; x < n && x < ZR_W; x++) zr_set(fb, 0, x, ZR_RED);
+  }
+}
+
 static inline void zr_car(zr_fb fb, const zr_state *s, double since_l, double since_r) {
   memset(fb, 0, sizeof(zr_fb));
   if (s->lamps & ZR_LEFT) zr_arrow(fb, 0, since_l);
@@ -113,22 +121,21 @@ static inline void zr_car(zr_fb fb, const zr_state *s, double since_l, double si
       for (int x = 0; x < ZR_W; x++)
         if (zr_off(fb, y, x)) zr_set(fb, y, x, c);
   }
-  if (s->prox_m >= 0 && s->prox_m < 1.0) {
-    const int n = (int)rint((1.0 - (double)s->prox_m) * ZR_W);
-    for (int x = 0; x < n && x < ZR_W; x++) zr_set(fb, 0, x, ZR_RED);
-  }
+  zr_prox_bar(fb, s->prox_m);
   if (s->mode == ZR_AUTOPILOT || s->mode == ZR_AUTOWARE) {
     zr_set(fb, 9, 0, ZR_CYAN); zr_set(fb, 9, 9, ZR_CYAN); zr_set(fb, 9, 10, ZR_CYAN); zr_set(fb, 9, 19, ZR_CYAN);
   }
 }
 
 // no vehicle state: a dim dashed line across the middle, moving so the panels show the node is alive.
-// tick = frame count at 20 frames/s (the dashes move one pixel every 4 frames)
-static inline void zr_nolink(zr_fb fb, uint32_t tick) {
+// tick = frame count at 20 frames/s (the dashes move one pixel every 4 frames). The proximity warning is the
+// zone's own sensor, so it stays on without the PC (prox_m < 0: none)
+static inline void zr_nolink(zr_fb fb, uint32_t tick, double prox_m) {
   static const uint8_t dim[3] = {40, 0, 0};
   memset(fb, 0, sizeof(zr_fb));
   for (int x = 0; x < ZR_W; x++)
     if ((x + tick / 4) % 4 < 2) { zr_set(fb, 4, x, dim); zr_set(fb, 5, x, dim); }
+  zr_prox_bar(fb, prox_m);
 }
 
 // the brightness setting (kept as a float) as the factor the PC uses: hundredths, as a double. 0.35f is

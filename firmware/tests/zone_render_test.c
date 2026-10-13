@@ -53,8 +53,9 @@ int main(void) {
     unsigned lamps, mode, tick;
     double since_l, since_r, bright, speed, prox, wheel, accel, brake;
     zr_fb fb, out;
-    if (sscanf(line, "nolink %u %lf", &tick, &bright) == 2) {
-      zr_nolink(fb, tick);
+    int nn = sscanf(line, "nolink %u %lf %lf", &tick, &bright, &prox);
+    if (nn >= 2) {
+      zr_nolink(fb, tick, nn == 3 ? prox : -1);   // "nolink tick bright [prox_m]"
       zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, zr_bright((float)bright));   // the node keeps it as a float
       hex(&out[0][0][0], sizeof out);
       continue;
