@@ -1,0 +1,270 @@
+# Signal catalogue: vehicle body zone + the motor node, VSS profile.
+# The single source of the ids, payload layouts, deadline classes, rates and freshness limits of the ZC frame.
+# `python3 zcgen.py` writes from it (see zcgen.py --help):
+#   C       t1s_node/zc_catalog.h            structs, encode/decode, const table, catalogue hash (ESP, motor node)
+#   vectors tests/zc_catalog_vectors.txt     golden vectors from the `examples` below
+#   docs    catalog/CATALOG.md
+#   Python  <bench>/tools/zc_catalog.py      tables for the console / gateway (with --py)
+#   Lua     <bench>/wireshark/zc_catalog.lua the dissector's table (with --lua)
+#
+# Item keys
+#   id         u16. 0x0001-0x00FF core (core.yaml), 0x0100-0x7FFF single signals, 0x8000-0xFFFF bundles
+#   name       dotted name (unique); c: the C / Python identifier (zc_put_<c>, ZC_ID_<C>)
+#   type       state | event | cmd | diag | heartbeat           (the header's msg type; ACK is generic, zc_core.h)
+#   class      event (<= 5 ms) | periodic (20-50 ms) | diagnostic
+#   period_ms  nominal send period (0 = on change only); max_age_ms: older than this = stale (receiver's safe state)
+#   ack        true: sent with ACK_REQ, answered by an ACK (zc_core.h), retransmitted with the same seq
+#   dir        zone->gw | gw->zone | node->gw | gw->node        port: the UDP port it is sent to
+#   edge       true: may also go off the period grid when it changes (flags.EDGE)
+#   fields     in wire order, little-endian, packed:
+#                name, type (u8 i8 u16 i16 u32 i32 u64 f32 char), count (array), scale + unit (physical =
+#                raw * scale), enum {label: raw}, bits {label: bit | [first bit, width]}, invalid (raw sentinel),
+#                safe (hold | invalid | a raw value | {bit label: 0/1} for bits), pad (n reserved zero bytes)
+#   map        per profile, at item or field level. Profiles: vss (implemented by the gateway: Zenoh key =
+#              vehicle/<lower-case VSS path without "Vehicle.">, value = the ZoneLink scalar type), and the hooks
+#              ros2 / uorb / ngva (validated and carried into the Python table, no gateway yet)
+#                vss: {key: <VSS path>, type: bool|u8|i8|u16|i16|f32, values: {label: vss value}, target: true}
+#                vss: {bits: {label: <VSS path>}}             one bool key per bit
+#                vss: {one_of: {label: <VSS path>, ...}}      an enum spread over bool keys (first true wins back)
+#   flags_map  per profile: header flags as keys, e.g. vss: {safe: <VSS path>}
+#   examples   values for the generated golden vectors (header keys seq ts flags + every field)
+# The catalogue hash (HEARTBEAT) covers the wire contract only: ids, names, types, classes, periods, ages, ack,
+# fields with scale / unit / enum / bits / invalid / safe / pad. Docs, maps and examples are left out, so a new
+# mapping on the gateway does not need a firmware build.
+catalog: vehicle-body
+version: 1
+profile: vss
+include: [core.yaml]
+items:
+  - id: 0x8001
+    name: zone.body.state_in
+    c: state_in
+    type: state
+    class: periodic
+    period_ms: 50
+    max_age_ms: 500
+    dir: gw->zone
+    port: 5008
+    edge: true
+    doc: >
+      The vehicle state a zone controller draws on its body endpoints (was VST2). max_age 500 ms is the measured
+      phase-1 behaviour ("no link" on the panels after 0.5 s); the design's 150 ms waits for a measurement of the
+      PC feed's stalls.
+    fields:
+      - name: lamps
+        type: u8
+        bits: {left_lit: 0, right_lit: 1, brake: 2, reverse: 3, hazard: 4}
+        safe: {hazard: 1}
+        map:
+          vss:
+            bits:
+              left_lit: Vehicle.Private.Lights.DirectionIndicator.Left.IsLit
+              right_lit: Vehicle.Private.Lights.DirectionIndicator.Right.IsLit
+              brake: Vehicle.Body.Lights.Brake.IsActive
+              reverse: Vehicle.Body.Lights.Backup.IsOn
+              hazard: Vehicle.Body.Lights.Hazard.IsSignaling
+      - name: gear
+        type: char
+        enum: {P: 0x50, R: 0x52, N: 0x4E, D: 0x44}
+        safe: hold
+        map:
+          vss: {key: Vehicle.Powertrain.Transmission.SelectedGear, type: i8, values: {P: 126, D: 127, N: 0, R: -1}}
+          ros2: {topic: /vehicle/status/gear_status, field: report}
+      - name: speed10
+        type: i16
+        scale: 0.1
+        unit: km/h
+        invalid: 0x7FFF
+        safe: invalid
+        map:
+          vss: {key: Vehicle.Speed, type: f32}
+          ros2: {topic: /vehicle/status/velocity_status, field: longitudinal_velocity, scale: 0.2777778}
+      - name: mode
+        type: u8
+        enum: {manual: 0, autopilot: 1, autoware: 2}
+        map:
+          vss: {key: Vehicle.Private.DrivingMode, type: u8}
+      - name: accel
+        type: u8
+        unit: "%"
+        map:
+          vss: {key: Vehicle.Chassis.Accelerator.PedalPosition, type: u8}
+      - name: wheel10
+        type: i16
+        scale: 0.1
+        unit: deg
+        doc: steering wheel angle, + = left
+        map:
+          vss: {key: Vehicle.Chassis.SteeringWheel.Angle, type: i16}
+      - name: brake
+        type: u8
+        unit: "%"
+        map:
+          vss: {key: Vehicle.Chassis.Brake.PedalPosition, type: u8}
+    examples:
+      - {seq: 1234, ts: 0x123456789, flags: 0, lamps: 5, gear: 0x44, speed10: 423, mode: 0, accel: 35, wheel10: -125, brake: 0}
+      - {seq: 0xFFFFFFFF, ts: 1234567890123, flags: 0x12, lamps: 0x13, gear: 0x52, speed10: -55, mode: 2, accel: 0, wheel10: 4500, brake: 100}
+
+  - id: 0x8002
+    name: zone.body.sensors_out
+    c: sensors_out
+    type: state
+    class: periodic
+    period_ms: 50
+    max_age_ms: 150
+    dir: zone->gw
+    port: 5009
+    doc: >
+      What the zone read from its body endpoint (was SNS1); timestamp = when the sensors were read.
+      flags.SAFE = the zone has no fresh vehicle state.
+    flags_map:
+      vss: {safe: Vehicle.Private.Zone.Body.IsStateLost}
+    fields:
+      - name: x
+        type: u16
+        invalid: 0xFFFF
+        doc: thumbstick X, 12-bit ADC
+        map: {vss: {key: Vehicle.Private.Zone.Body.Stick.X, type: u16}}
+      - name: y
+        type: u16
+        invalid: 0xFFFF
+        map: {vss: {key: Vehicle.Private.Zone.Body.Stick.Y, type: u16}}
+      - name: prox
+        type: u16
+        invalid: 0xFFFF
+        doc: proximity sensor counts
+        map: {vss: {key: Vehicle.Private.Zone.Body.Proximity.Counts, type: u16}}
+      - name: sflags
+        type: u8
+        bits: {i2c_open: 0, spi_open: 1, gear_count: [4, 4]}
+        doc: bits 4-7 count gear events (a lost packet does not lose a shift)
+        map:
+          vss:
+            bits:
+              i2c_open: Vehicle.Private.Zone.Body.I2C.IsOpen
+              spi_open: Vehicle.Private.Zone.Body.SPI.IsOpen
+      - name: gear_event
+        type: char
+        enum: {none: 0, P: 0x50, R: 0x52, N: 0x4E, D: 0x44}
+    examples:
+      - {seq: 5678, ts: 86400123456789, flags: 0x02, x: 2020, y: 2085, prox: 3, sflags: 0x13, gear_event: 0x44}
+      - {seq: 0, ts: 0, flags: 0x20, x: 0xFFFF, y: 0xFFFF, prox: 0xFFFF, sflags: 0, gear_event: 0}
+
+  - id: 0x0110
+    name: body.lights.indicator
+    c: indicator
+    type: event
+    class: event
+    period_ms: 0
+    max_age_ms: 5
+    ack: true
+    dir: gw->zone
+    port: 5006
+    doc: A body event for the zone (was T1S-EVT). Answered by an ACK before it is executed.
+    fields:
+      - name: code
+        type: u8
+        enum: {"off": 0, left: 1, right: 2, hazard: 3, horn: 4, flash: 5}
+        map:
+          vss:
+            one_of:
+              hazard: Vehicle.Body.Lights.Hazard.IsSignaling
+              left: Vehicle.Body.Lights.DirectionIndicator.Left.IsSignaling
+              right: Vehicle.Body.Lights.DirectionIndicator.Right.IsSignaling
+              horn: Vehicle.Body.Horn.IsActive
+    examples:
+      - {seq: 56, ts: 0xAE345CBB, flags: 0x01, code: 3}
+
+  - id: 0x0120
+    name: powertrain.gear.target
+    c: gear_target
+    type: cmd
+    class: event
+    period_ms: 0
+    max_age_ms: 5
+    ack: true
+    dir: zone->gw
+    port: 5009
+    doc: >
+      A gear request from the zone (thumbstick flick). The gateway forwards it as the VSS actuator target and ACKs
+      (result 1 for a value outside the enum); a repeat with the same seq is ACKed again, not forwarded twice.
+    fields:
+      - name: gear
+        type: char
+        enum: {P: 0x50, R: 0x52, N: 0x4E, D: 0x44}
+        map:
+          vss: {key: Vehicle.Powertrain.Transmission.SelectedGear, type: i8, values: {P: 126, D: 127, N: 0, R: -1}, target: true}
+          ros2: {topic: /control/command/gear_cmd, field: command}
+    examples:
+      - {seq: 9, ts: 1234567890123, flags: 0x03, gear: 0x44}
+
+  - id: 0x8003
+    name: motion.cmd
+    c: motion_cmd
+    type: state
+    class: periodic
+    period_ms: 20
+    max_age_ms: 500
+    dir: gw->node
+    port: 5008
+    doc: >
+      Setpoints for a motor node (two DC motors with encoders, a steering servo, up to 8 servos). The node stops
+      its motors when no command arrived for max_age. Was the provisional id 0x8010.
+    fields:
+      - name: ctl
+        type: u8
+        bits: {motors_on: 0, servos_on: 1, brake: 2, per_wheel: 3, curvature: 4}
+        safe: {motors_on: 0, brake: 1}
+      - {name: servo_mask, type: u8, doc: servo channels 1-8 the command sets}
+      - {name: wl100, type: i16, scale: 0.01, unit: rad/s, doc: left wheel target (per_wheel)}
+      - {name: wr100, type: i16, scale: 0.01, unit: rad/s}
+      - {name: speed_mm, type: i16, scale: 0.001, unit: m/s, map: {ros2: {topic: /zone/motion/cmd_vel, msg: geometry_msgs/Twist, field: linear.x}}}
+      - {name: steer10, type: i16, scale: 0.1, unit: deg, doc: "road-wheel (bicycle) angle; with ctl.curvature the path curvature in 1/m x1000, + = left"}
+      - {name: servo10, type: i16, count: 8, scale: 0.1, unit: deg}
+    examples:
+      - {seq: 77, ts: 5000, flags: 0, ctl: 0x09, servo_mask: 0x81, wl100: -1234, wr100: 2345, speed_mm: -300, steer10: 155, servo10: [900, 0, 0, 0, 0, 0, 0, -450]}
+
+  - id: 0x8004
+    name: motion.telemetry
+    c: motion_telemetry
+    type: state
+    class: periodic
+    period_ms: 20
+    max_age_ms: 100
+    dir: node->gw
+    port: 5009
+    doc: The motor node's measurements, 50 Hz. Was the provisional id 0x8011.
+    fields:
+      - name: status
+        type: u16
+        bits: {motors_on: 0, servos_on: 1, safe: 2, stall_a: 3, stall_b: 4, overload_a: 5, overload_b: 6,
+               usb_host: 7, usb_oc: 8, imu_ok: 9, ptp: 10, limit_a: 11, limit_b: 12}
+      - {name: cmd_age_ms, type: u16, unit: ms}
+      - {name: enc_a, type: i32, doc: encoder counts}
+      - {name: enc_b, type: i32}
+      - {name: w_a100, type: i16, scale: 0.01, unit: rad/s}
+      - {name: w_b100, type: i16, scale: 0.01, unit: rad/s}
+      - {name: i_a_ma, type: u16, unit: mA}
+      - {name: i_b_ma, type: u16, unit: mA}
+      - {name: duty_a, type: i16, scale: 0.001}
+      - {name: duty_b, type: i16, scale: 0.001}
+      - {name: imu_kind, type: u8, enum: {none: 0, icm42688: 1, bno085: 2}}
+      - {name: imu_flags, type: u8}
+      - {name: quat, type: i16, count: 4, scale: 0.00006103515625, doc: "w x y z, Q14",
+         map: {ros2: {topic: /zone/motion/imu, msg: sensor_msgs/Imu, field: orientation}}}
+      - {name: accel100, type: i16, count: 3, scale: 0.01, unit: m/s^2}
+      - {name: gyro1000, type: i16, count: 3, scale: 0.001, unit: rad/s}
+      - {name: servo_us, type: u16, count: 4, unit: us, doc: servos 1-4}
+      - {name: veh_steer100, type: i16, scale: 0.01, unit: deg, doc: vehicle profile only (else 0) -- commanded bicycle angle after slew}
+      - {name: veh_speed_mm, type: i16, scale: 0.001, unit: m/s, doc: measured, mean of the two wheels}
+      - {name: veh_curv1000, type: i16, scale: 0.001, unit: 1/m, doc: commanded curvature}
+      - {name: vbat_mv, type: u16, unit: mV, doc: "the `vin` setting unless veh_flags.vbat_measured"}
+      - {name: profile, type: u8, enum: {none: 0, sedan_1_9: 1}}
+      - name: veh_flags
+        type: u8
+        bits: {vbat_measured: 0, yaw_loop: 1, limited: 2, at_lock: 3, failsafe: 4}
+    examples:
+      - {seq: 1000, ts: 1234567, flags: 0x02, status: 0x0605, cmd_age_ms: 20, enc_a: -100000, enc_b: 123456, w_a100: -1500,
+         w_b100: 1500, i_a_ma: 850, i_b_ma: 920, duty_a: -400, duty_b: 450, imu_kind: 1, imu_flags: 3,
+         quat: [16384, 0, -100, 200], accel100: [0, -12, 981], gyro1000: [1, -2, 3], servo_us: [1500, 1000, 2000, 0],
+         veh_steer100: -1234, veh_speed_mm: 450, veh_curv1000: 200, vbat_mv: 7400, profile: 1, veh_flags: 0x06}

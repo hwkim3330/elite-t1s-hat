@@ -268,9 +268,20 @@ two 10x10 LED panels (one 20x10 RTP raw-RGB frame to UDP 5001).
   always accepted; `wire` only picks what this node sends (saved). With `ptp gm` locked, timestamps are gPTP ns
   (flag TS_VALID): the LAN8651 clock is read once per 50 ms cycle and esp_timer is mapped onto it in between; else
   they are esp_timer microseconds. No vehicle state for 0.5 s still means "no link" with the proximity bar, and in
-  ZC every sensors message then carries the SAFE flag. The byte table is at the top of `zc_core.h`;
-  `tests/zc_core_test.c` checks it against hand-written golden vectors (`tests/zc_vectors.txt`):
-  `cc -std=c99 -Wall -Wextra -Werror -It1s_node -o /tmp/zc tests/zc_core_test.c && /tmp/zc tests/zc_vectors.txt && /tmp/zc`.
+  ZC every sensors message then carries the SAFE flag. The header's byte table is at the top of `zc_core.h`.
+- **Signal catalogue (`catalog/`).** The payloads are not hand-written: `catalog/vehicle_body.yaml` (+ `core.yaml`)
+  holds every id, layout, deadline class, rate and max age, and `python3 catalog/zcgen.py` generates
+  `t1s_node/zc_catalog.h` (structs, encode/decode, safe values, a const table, the catalogue hash),
+  `tests/zc_catalog_vectors.txt` (golden vectors from the YAML's examples), `tests/zc_catalog_test.inc` and
+  `catalog/CATALOG.md`; with `--py` / `--lua` / `--extra-c` also a Python table, a Wireshark table and copies of the
+  header for other nodes. `zcgen.py --check` fails when a generated file is out of date. Profiles: `vss` mappings are
+  used by a gateway (ZC <-> Zenoh keys); `ros2` / `uorb` / `ngva` maps are validated and carried as hooks.
+  With `wire zc` the node also sends HEARTBEAT 0x0001 once a second (catalogue hash and version, PLCA id, gPTP state)
+  and a stick flick as CMD 0x0120 gear.target with ACK_REQ, sent again with the same sequence until acked (3 tries).
+  `tests/zc_core_test.c` checks the core and the generated codecs against the hand-written vectors
+  (`tests/zc_vectors.txt`, bytes typed in from the spec tables, not from the YAML) and the generated ones:
+  `cc -std=c99 -Wall -Wextra -Werror -It1s_node -o /tmp/zc tests/zc_core_test.c && /tmp/zc tests/zc_vectors.txt &&
+  /tmp/zc tests/zc_catalog_vectors.txt && /tmp/zc`.
 
 ```
 zone ip 192.168.0.65 192.168.0.50     alias, endpoint (saved)

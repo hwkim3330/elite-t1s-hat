@@ -29,8 +29,12 @@
 //           State in is taken in either format (told apart by the first bytes); what goes out is set by
 //           `wire legacy|zc` (saved). A ZC header carries a sequence, a deadline class and a timestamp: the gPTP time
 //           when this node's clock follows a grandmaster (`ptp gm`, flags.TS_VALID), else esp_timer microseconds.
-//           Safe state: no vehicle state for 0.5 s (or a gPTP-stamped one older than that) -> "no link" on the panels
-//           with the proximity bar, and flags.SAFE on every sensors_out until the state is fresh again.
+//           Safe state: no vehicle state for the catalogue's max_age of state_in (500 ms; or a gPTP-stamped one older
+//           than that) -> "no link" on the panels with the proximity bar, and flags.SAFE on every sensors_out until the
+//           state is fresh again.
+//           Also in ZC (catalogue phase 2): HEARTBEAT 0x0001 once a second (catalogue hash, PLCA id, gPTP state; a
+//           gateway with another catalogue refuses this node), and a stick flick as CMD 0x0120 gear.target with
+//           ACK_REQ to the state sender, sent again with the same seq while no ACK came (3 tries, one per cycle).
 // Settings (`zone ip`, `zone on|off`, `zone bright`, `zone align`, `wire`) are kept in NVS.
 #pragma once
 #include <Arduino.h>
@@ -42,7 +46,7 @@
 #include <lwip/sockets.h>
 #include "zone_render.h"
 #include "zone_wtlv.h"
-#include "zc_core.h"
+#include "zc_catalog.h"   // generated from firmware/catalog/vehicle_body.yaml (ids, layouts, ages); includes zc_core.h
 
 namespace zone {
 
@@ -403,6 +407,16 @@ static zc_seq_t gStTrack = {0, 0, 0, 0};
 static uint32_t gDiagSeq = 0, gBusyMaxDiag = 0;
 static volatile int64_t gSampleUs = 0;    // esp_timer when the last full set of sensor readings was taken
 static bool gStFresh = false;
+// HEARTBEAT and the gear.target command (ZC only)
+static const uint8_t *gPlcaIdPtr = nullptr;        // the sketch's saved PLCA id (255 = off), for the HEARTBEAT
+static uint32_t gHbSeq = 0;
+static volatile bool gGearReq = false;             // a flick to send (set by the RCP task, sent by the zone task)
+static volatile char gGearReqG = 0;
+static uint32_t gGearSeq = 0, gGearPendSeq = 0, gGearSent = 0, gGearAcked = 0, gGearLost = 0, gGearRetries = 0;
+static uint8_t gGearTries = 0, gGearLastResult = 0xFF;
+static char gGearPend = 0;
+static int64_t gGearT0 = 0;
+static uint32_t gGearAckUs = 0;
 static sockaddr_in gPeer;
 static bool gPeerKnown = false;
 static int64_t gEdgeL = 0, gEdgeR = 0;    // us: when that lamp's lit phase began (arrow sweep)
@@ -461,13 +475,24 @@ static void stateIn() {
     if (w == ZC_WIRE_ZC) {                         // bundle 0x8001 in the common header
       zc_hdr_t h;
       zc_state_in_t z;
+      zc_ack_t ak;
+      if (zc_get_hdr(b, n, &h) == ZC_OK && h.type == ZC_ACK && h.id == ZC_ID_GEAR_TARGET &&      // the gateway's answer
+          zc_get_ack(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &ak) == ZC_OK) {
+        if (gGearPend && ak.seq == gGearPendSeq) {
+          gGearAckUs = (uint32_t)(esp_timer_get_time() - gGearT0);
+          gGearLastResult = ak.result;
+          gGearAcked++;
+          gGearPend = 0;
+        }
+        continue;
+      }
       if (zc_get_hdr(b, n, &h) != ZC_OK || h.type != ZC_STATE || h.id != ZC_ID_STATE_IN ||
           zc_get_state_in(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &z) != ZC_OK) { gStBad++; continue; }
       if (!zc_seq_take(&gStTrack, h.seq)) { gStRepeat++; continue; }
       if (h.flags & ZC_F_TS_VALID) {               // sampled too long ago on the sender's gPTP clock: not fresh
         uint8_t f = 0;
         const uint64_t now = zcNow(&f);
-        if ((f & ZC_F_TS_VALID) && !zc_ts_fresh(now, h.ts, (uint64_t)ZC_STATE_IN_MAX_AGE_MS * 1000000ULL)) { gStOld++; continue; }
+        if ((f & ZC_F_TS_VALID) && !zc_ts_fresh(now, h.ts, (uint64_t)ZC_MAX_AGE_MS_STATE_IN * 1000000ULL)) { gStOld++; continue; }
       }
       gStSeq = h.seq;
       gStZc++;
@@ -503,6 +528,38 @@ static void sensorsOut(uint16_t busyUs) {
     const uint64_t ts = zcStamp(at ? at : esp_timer_get_time(), &flags);   // when the sensors were read
     const zc_sensors_out_t so = {x, y, pr, (uint8_t)(open | (snsCount << 4)), (uint8_t)gEvent};
     sendto(gSock, b, zc_msg_sensors_out(b, flags, seq, ts, &so), 0, (sockaddr *)&gPeer, sizeof(gPeer));
+    // gear.target: a new flick replaces an unanswered one; an unanswered one goes again (same seq) once per cycle
+    if (gGearReq) {
+      gGearReq = false;
+      gGearPend = gGearReqG;
+      gGearPendSeq = gGearSeq++;
+      gGearTries = 0;
+      gGearT0 = esp_timer_get_time();
+    }
+    if (gGearPend) {
+      if (gGearTries >= 3) {
+        gGearLost++;
+        gGearPend = 0;
+      } else {
+        uint8_t gf = ZC_F_ACK_REQ;
+        const uint64_t gts = zcStamp(gGearT0, &gf);
+        uint8_t gb[ZC_HDR_LEN + ZC_LEN_GEAR_TARGET];
+        const zc_gear_target_t gt = {(uint8_t)gGearPend};
+        sendto(gSock, gb, zc_msg_gear_target(gb, gf, gGearPendSeq, gts, &gt), 0, (sockaddr *)&gPeer, sizeof(gPeer));
+        if (gGearTries++) gGearRetries++;
+        else gGearSent++;
+      }
+    }
+    if (seq % 20 == 10) {                      // HEARTBEAT, 1 Hz, half a second after zone.diag
+      uint8_t hf = 0;
+      const uint64_t hts = zcNow(&hf);
+      const uint8_t plca = gPlcaIdPtr ? *gPlcaIdPtr : 0xFF;
+      const zc_heartbeat_t hb = {ZC_CATALOG_HASH, ZC_CATALOG_VERSION, ZC_HEARTBEAT_ROLE_ZONE, plca,
+                                 (uint8_t)(gPtpLocked ? ZC_HEARTBEAT_GPTP_LOCKED : ZC_HEARTBEAT_GPTP_NONE),
+                                 (uint8_t)(gStFresh ? 0 : 1), busyUs};
+      uint8_t hb_b[ZC_HDR_LEN + ZC_LEN_HEARTBEAT];
+      sendto(gSock, hb_b, zc_msg_heartbeat(hb_b, hf, gHbSeq++, hts, &hb), 0, (sockaddr *)&gPeer, sizeof(gPeer));
+    }
     if (seq % 20 == 0) {                       // zone.diag, 1 Hz
       uint8_t df = 0;
       const uint64_t dts = zcNow(&df);
@@ -538,6 +595,7 @@ static void gearFlick(int x, int y) {
   if (confirmed && gArmed) {
     gEvent = g;
     gEventCount = (gEventCount + 1) & 0x0F;
+    if (gWire == 1 && !zlFresh()) { gGearReqG = g; gGearReq = true; }   // ZC: also as CMD gear.target (ACKed)
     gArmed = false;
     Con.printf("zone: gear %c (stick x %d y %d)\n", g, x, y);
   } else if (fabsf(jx) < 0.25f && fabsf(jy) < 0.25f) {
@@ -627,10 +685,10 @@ static void rcpTask(void *) {
 
 static void frameOnce(bool aligned) {
   zr_fb fb;
-  gStFresh = gStCount && millis() - gStAt < 500;
+  gStFresh = gStCount && millis() - gStAt < ZC_MAX_AGE_MS_STATE_IN;
   static bool wasFresh = false;
   if (gStFresh != wasFresh) {
-    Con.printf("zone: vehicle state %s\n", gStFresh ? "arriving" : "lost (no update for 0.5 s): \"no link\" on the panels");
+    Con.printf("zone: vehicle state %s\n", gStFresh ? "arriving" : "lost (no update for max_age): \"no link\" on the panels");
     wasFresh = gStFresh;
   }
   if (gStFresh) {
@@ -799,6 +857,11 @@ static void wireStatus() {
              (unsigned long)gStOld, (unsigned long)gStSeq, (unsigned long)gDiagSeq, gPtpLocked ? "gPTP" : "local us",
              (unsigned long)gClockReads, (unsigned long)(gClockReads ? gClockUsSum / gClockReads : 0), (unsigned long)gClockUsMax,
              (unsigned long)gClockSlow, (long long)kClockReadMaxUs);
+  Con.printf("zone: catalogue %s v%d hash 0x%08lx; heartbeats %lu; gear.target sent %lu, acked %lu (last result %d, %lu us), "
+             "retries %lu, lost %lu\n", ZC_CATALOG_NAME, ZC_CATALOG_VERSION, (unsigned long)ZC_CATALOG_HASH,
+             (unsigned long)gHbSeq, (unsigned long)gGearSent, (unsigned long)gGearAcked,
+             gGearLastResult == 0xFF ? -1 : gGearLastResult, (unsigned long)gGearAckUs, (unsigned long)gGearRetries,
+             (unsigned long)gGearLost);
 }
 // wire [legacy|zc]: the format of what this node sends (sensors out, event acks, `evt`); both are always received
 static void wireCommand(const char *a) {

@@ -744,8 +744,9 @@ static void evtTask(void *) {
     uint8_t af = 0;
     const uint64_t now = zone::zcNow(&af);
     if (h.id != ZC_ID_INDICATOR) result = ZC_ACK_UNKNOWN;
-    else if (zc_get_indicator(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &code) != ZC_OK || code > 5) result = ZC_ACK_RANGE;
-    else if ((h.flags & ZC_F_TS_VALID) && (af & ZC_F_TS_VALID) && !zc_ts_fresh(now, h.ts, ZC_EVENT_MAX_AGE_NS)) result = ZC_ACK_STALE;
+    else if (zc_indicator_t ind; zc_get_indicator(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &ind) != ZC_OK ||
+             (code = ind.code) > ZC_INDICATOR_CODE_FLASH) result = ZC_ACK_RANGE;
+    else if ((h.flags & ZC_F_TS_VALID) && (af & ZC_F_TS_VALID) && !zc_ts_fresh(now, h.ts, (uint64_t)ZC_MAX_AGE_MS_INDICATOR * 1000000ULL)) result = ZC_ACK_STALE;
     const bool repeat = haveLast && from.sin_addr.s_addr == lastIp && h.seq == lastSeq;
     if (h.flags & ZC_F_ACK_REQ) {
       uint8_t ack[ZC_HDR_LEN + ZC_LEN_ACK];
@@ -782,7 +783,8 @@ static void cmdEvt(const char *rest) {
   if (zone::gWire == 1) {
     uint8_t b[ZC_HDR_LEN + ZC_LEN_ACK + 8], f = ZC_F_ACK_REQ;
     const uint64_t ts = zone::zcNow(&f);
-    sendto(s, b, zc_msg_indicator(b, f, seq, ts, (uint8_t)code), 0, (sockaddr *)&to, sizeof(to));
+    const zc_indicator_t ind = {(uint8_t)code};
+    sendto(s, b, zc_msg_indicator(b, f, seq, ts, &ind), 0, (sockaddr *)&to, sizeof(to));
     int n;
     uint8_t result = 0xFF;
     while ((n = recv(s, b, sizeof(b), 0)) > 0) {
@@ -2115,6 +2117,7 @@ void setup() {
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
     if (gMac) xTaskCreate(txWatchTask, "txwatch", 3072, nullptr, 3, nullptr);   // `txstat`, `txgate`
     zone::gPtpRead = ptpReadLocked;
+    zone::gPlcaIdPtr = &gCfg.plcaId;   // for the HEARTBEAT
     zone::begin(gEth);   // zone controller (runs if `zone on` was saved, see zone.h)
     zl::begin();         // its ZoneLink keys (declared when a Zenoh session opens)
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH; skipped after `zenoh off`)

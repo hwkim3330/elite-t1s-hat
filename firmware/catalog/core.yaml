@@ -1,0 +1,45 @@
+# Core items of the ZC frame (ids 0x0001-0x00FF): the same in every catalogue, domain-neutral.
+# Included by every profile catalogue; zcgen.py merges them. Schema: see vehicle_body.yaml.
+catalog: zc-core
+version: 1
+items:
+  - id: 0x0001
+    name: core.heartbeat
+    c: heartbeat
+    type: heartbeat
+    class: diagnostic
+    period_ms: 1000
+    max_age_ms: 3000
+    dir: node->gw
+    port: 5009
+    doc: >
+      Every node, once a second. A gateway compares catalog_hash with its own catalogue and refuses to interpret
+      the node's STATE / EVENT / CMD while they differ (no silent downgrade).
+    fields:
+      - {name: catalog_hash, type: u32, doc: CRC-32 of the catalogue's canonical form (wire contract only)}
+      - {name: catalog_version, type: u16}
+      - {name: role, type: u8, enum: {zone: 0, endpoint: 1, gateway: 2}}
+      - {name: plca_id, type: u8, doc: PLCA node id (0xFF = unknown)}
+      - {name: gptp, type: u8, enum: {none: 0, slewing: 1, locked: 2}}
+      - {name: safe_count, type: u8, doc: signals the node holds in their safe state (saturates at 255)}
+      - {name: cycle_us, type: u16, unit: us, doc: work time of the node's last cycle}
+    examples:
+      - {seq: 12, ts: 1000000, flags: 0x02, catalog_hash: 0xDEADBEEF, catalog_version: 1, role: 0, plca_id: 0, gptp: 2, safe_count: 0, cycle_us: 3100}
+
+  - id: 0x0010
+    name: zone.diag
+    c: zone_diag
+    type: diag
+    class: diagnostic
+    period_ms: 1000
+    max_age_ms: 3000
+    dir: node->gw
+    port: 5009
+    doc: Work time and failure counters of a zone controller's frame loop.
+    fields:
+      - {name: busy_us, type: u16, unit: us, doc: work time of the last cycle}
+      - {name: busy_max_us, type: u16, unit: us, doc: longest cycle since the previous diag}
+      - {name: failed_cycles, type: u32}
+      - {name: overruns, type: u32}
+    examples:
+      - {seq: 3, ts: 1000000, flags: 0, busy_us: 3100, busy_max_us: 5158, failed_cycles: 70000, overruns: 2}

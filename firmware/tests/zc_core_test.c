@@ -1,4 +1,5 @@
-// Host test of the ZC core frame (../t1s_node/zc_core.h) against the golden vectors, plus a line mode that the
+// Host test of the ZC core frame (../t1s_node/zc_core.h) and the generated catalogue codecs (zc_catalog.h,
+// zc_catalog_test.inc) against the golden vectors (hand-written zc_vectors.txt, generated zc_catalog_vectors.txt), plus a line mode that the
 // bench console's tests drive to compare this C code with its Python encoder on random messages.
 //   cc -O1 -Wall -Wextra -Werror -I../t1s_node -o zc_core_test zc_core_test.c
 //   ./zc_core_test zc_vectors.txt        check every vector (encode -> same bytes, decode -> same fields), exit 1 on a miss
@@ -10,9 +11,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "zc_core.h"
+#include "zc_catalog.h"
 
-#define MAXK 24
+#define MAXK 48
 typedef struct { char k[24]; long long v; } kv_t;
 typedef struct { kv_t a[MAXK]; int n; } kvs_t;
 
@@ -26,6 +27,8 @@ static long long need(const kvs_t *m, const char *k, int *bad) {
   if (!get(m, k, &v)) { fprintf(stderr, "missing key %s\n", k); *bad = 1; }
   return v;
 }
+#include "zc_catalog_test.inc"
+
 // "k=v k=v ..." up to (not including) "hex="
 static void parse_kv(char *s, kvs_t *m) {
   m->n = 0;
@@ -64,21 +67,10 @@ static int enc(const char *kind, const kvs_t *m, uint8_t *b) {
   h.version = (uint8_t)ver;
   int n = zc_put_hdr(b, &h);
   uint8_t *p = b + n;
-  if (!strcmp(kind, "state_in")) {
-    zc_state_in_t s = {(uint8_t)need(m, "lamps", &bad), (uint8_t)need(m, "gear", &bad), (int16_t)need(m, "speed10", &bad),
-                       (uint8_t)need(m, "mode", &bad), (uint8_t)need(m, "accel", &bad), (int16_t)need(m, "wheel10", &bad),
-                       (uint8_t)need(m, "brake", &bad)};
-    n += zc_put_state_in(p, &s);
-  } else if (!strcmp(kind, "sensors_out")) {
-    zc_sensors_out_t s = {(uint16_t)need(m, "x", &bad), (uint16_t)need(m, "y", &bad), (uint16_t)need(m, "prox", &bad),
-                          (uint8_t)need(m, "sflags", &bad), (uint8_t)need(m, "gear_event", &bad)};
-    n += zc_put_sensors_out(p, &s);
-  } else if (!strcmp(kind, "zone_diag")) {
-    zc_zone_diag_t d = {(uint16_t)need(m, "busy_us", &bad), (uint16_t)need(m, "busy_max_us", &bad),
-                        (uint32_t)need(m, "failed_cycles", &bad), (uint32_t)need(m, "overruns", &bad)};
-    n += zc_put_zone_diag(p, &d);
-  } else if (!strcmp(kind, "indicator")) {
-    n += zc_put_indicator(p, (uint8_t)need(m, "code", &bad));
+  if (strcmp(kind, "ack")) {
+    const int k = zc_cat_enc(kind, m, p, &bad);
+    if (k < 0) { fprintf(stderr, "unknown kind %s\n", kind); return -1; }
+    n += k;
   } else if (!strcmp(kind, "ack")) {
     zc_ack_t a = {(uint32_t)need(m, "acked", &bad), (uint8_t)need(m, "result", &bad)};
     n += zc_put_ack(p, &a);
@@ -102,31 +94,15 @@ static int dec(const uint8_t *b, int n, char *out, size_t cap) {
     zc_ack_t a;
     if ((e = zc_get_ack(p, pn, &a))) return e;
     snprintf(out + o, cap - o, " acked=%lu result=%u", (unsigned long)a.seq, a.result);
-  } else if (h.id == ZC_ID_STATE_IN) {
-    zc_state_in_t s;
-    if ((e = zc_get_state_in(p, pn, &s))) return e;
-    snprintf(out + o, cap - o, " lamps=%u gear=%u speed10=%d mode=%u accel=%u wheel10=%d brake=%u", s.lamps, s.gear, s.speed10,
-             s.mode, s.accel, s.wheel10, s.brake);
-  } else if (h.id == ZC_ID_SENSORS_OUT) {
-    zc_sensors_out_t s;
-    if ((e = zc_get_sensors_out(p, pn, &s))) return e;
-    snprintf(out + o, cap - o, " x=%u y=%u prox=%u sflags=%u gear_event=%u", s.x, s.y, s.prox, s.flags, s.gear_event);
-  } else if (h.id == ZC_ID_ZONE_DIAG) {
-    zc_zone_diag_t d;
-    if ((e = zc_get_zone_diag(p, pn, &d))) return e;
-    snprintf(out + o, cap - o, " busy_us=%u busy_max_us=%u failed_cycles=%lu overruns=%lu", d.busy_us, d.busy_max_us,
-             (unsigned long)d.failed_cycles, (unsigned long)d.overruns);
-  } else if (h.id == ZC_ID_INDICATOR) {
-    uint8_t c;
-    if ((e = zc_get_indicator(p, pn, &c))) return e;
-    snprintf(out + o, cap - o, " code=%u", c);
+  } else if ((e = zc_cat_dec(h.id, p, pn, out + o, cap - o)) < 0) {
+    return e;
   }
   return ZC_OK;
 }
 
 // every key of the vector line must come back from dec() with the same value
 static int same_fields(const kvs_t *want, const char *got) {
-  char tmp[512];
+  char tmp[1024];
   snprintf(tmp, sizeof tmp, "%s", got);
   kvs_t g;
   parse_kv(tmp, &g);
@@ -141,7 +117,7 @@ static int same_fields(const kvs_t *want, const char *got) {
 static int run_vectors(const char *path) {
   FILE *f = fopen(path, "r");
   if (!f) { perror(path); return 2; }
-  char line[1024];
+  char line[2048];
   int total = 0, fail = 0;
   while (fgets(line, sizeof line, f)) {
     if (line[0] == '#' || line[0] == '\n') continue;
@@ -160,7 +136,7 @@ static int run_vectors(const char *path) {
     if (!strcmp(kind, "reject")) {
       long long err = 0;
       get(&m, "err", &err);
-      char out[512];
+      char out[1024];
       const int e = dec(want, wn, out, sizeof out);
       if (e != err) { fprintf(stderr, "  decode gave %d, want %lld\n", e, err); ok = 0; }
     } else if (!strcmp(kind, "wire")) {
@@ -171,13 +147,13 @@ static int run_vectors(const char *path) {
     } else {
       const int gn = enc(kind, &m, got);
       if (gn != wn || memcmp(got, want, (size_t)wn)) {
-        char a[600], b[600];
+        char a[1200], b[1200];
         hexs(got, gn < 0 ? 0 : gn, a);
         hexs(want, wn, b);
         fprintf(stderr, "  encode %s\n  vector %s\n", a, b);
         ok = 0;
       }
-      char out[512];
+      char out[1024];
       const int e = dec(want, wn, out, sizeof out);
       if (e) { fprintf(stderr, "  decode error %d\n", e); ok = 0; }
       else if (!same_fields(&m, out)) ok = 0;
@@ -191,10 +167,10 @@ static int run_vectors(const char *path) {
 }
 
 static int run_lines(void) {
-  char line[1024];
+  char line[2048];
   while (fgets(line, sizeof line, stdin)) {
     uint8_t b[256];
-    char out[600];
+    char out[1200];
     if (!strncmp(line, "enc ", 4)) {
       char kind[32] = "";
       int skip = 0;

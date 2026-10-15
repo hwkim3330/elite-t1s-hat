@@ -4,7 +4,8 @@
 # tests/test_zc.py) must both reproduce these bytes and decode them back to these fields.
 #
 # One message per line: <kind> <name> key=value ... hex=<bytes>; hex= takes the rest of the line, spaces ignored
-#   kinds with a payload: state_in sensors_out zone_diag indicator ack
+#   kinds with a payload: every catalogue item by its c name (state_in sensors_out zone_diag indicator heartbeat
+#   gear_target motion_cmd motion_telemetry) and ack
 #     header keys: version (default 0x10) type id cls flags seq ts
 #   reject: hex must fail to decode with err (-1 short, -2 magic, -3 major, -4 payload too short for the id)
 #   wire:   zc_wire_of(hex) == wire (0 unknown, 1 zc, 2 VST1/VST2, 3 SNS1, 4 legacy T1S-EVT)
@@ -26,6 +27,15 @@ ack ok type=4 id=0x0110 cls=0 flags=0 seq=7 ts=0x8070605040302010 acked=56 resul
 ack range type=4 id=0x0110 cls=0 flags=0x02 seq=8 ts=1234567890123 acked=57 result=1 hex=5a4310041001000208000000cb04fb711f0100003900000001000000
 # zone.diag 1 Hz: 3.1 ms last cycle, 5.158 ms max, 70000 failed cycles, 2 overruns
 zone_diag diag type=5 id=0x0010 cls=2 flags=0 seq=3 ts=1000000 busy_us=3100 busy_max_us=5158 failed_cycles=70000 overruns=2 hex=5a431005100002000300000040420f00000000001c0c26147011010002000000
+
+# Phase 2 items (catalogue vehicle-body v1). Bytes packed with struct formats typed in from the spec tables -- the
+# HEARTBEAT table (hash u32, version u16, role, PLCA id, gPTP state, safe count, cycle us) and the motor node's earlier
+# hand-coded zc_frame.h / zc_motion.py for motion (the telemetry's last 10 bytes, reserved there, are the vehicle
+# profile fields now, zero here) -- not from the YAML or the generator. Arrays are flattened (servo100 = servo10[0]).
+heartbeat zone_locked type=6 id=0x0001 cls=2 flags=0x02 seq=41 ts=987654321 catalog_hash=0x80F7BB7A catalog_version=1 role=0 plca_id=0 gptp=2 safe_count=1 cycle_us=4321 hex=5a4310060100020229000000b168de3a000000007abbf780010000000201e110
+gear_target reverse_usclock type=3 id=0x0120 cls=0 flags=0x01 seq=1 ts=123456 gear=0x52 hex=5a431003200100010100000040e201000000000052
+motion_cmd drive type=1 id=0x8003 cls=1 flags=0 seq=7 ts=0 ctl=3 servo_mask=2 wl100=0 wr100=0 speed_mm=500 steer10=-200 servo100=0 servo101=900 servo102=0 servo103=0 servo104=0 servo105=0 servo106=0 servo107=0 hex=5a43100103800100070000000000000000000000030200000000f40138ff00008403000000000000000000000000
+motion_telemetry safe_stop type=1 id=0x8004 cls=1 flags=0x20 seq=99 ts=1 status=513 cmd_age_ms=500 enc_a=7 enc_b=-7 w_a100=100 w_b100=-100 i_a_ma=10 i_b_ma=20 duty_a=-1 duty_b=1 imu_kind=2 imu_flags=0 quat0=16384 quat1=1 quat2=2 quat3=3 accel1000=4 accel1001=5 accel1002=6 gyro10000=7 gyro10001=8 gyro10002=9 servo_us0=1500 servo_us1=1501 servo_us2=1502 servo_us3=1503 veh_steer100=0 veh_speed_mm=0 veh_curv1000=0 vbat_mv=0 profile=0 veh_flags=0 hex=5a431001048001206300000001000000000000000102f40107000000f9ffffff64009cff0a001400ffff010002000040010002000300040005000600070008000900dc05dd05de05df0500000000000000000000
 
 # decode only: a 1.1 sender (minor newer) is accepted; the encoders always write 1.0
 state_in minor_1_1 version=0x11 type=1 id=0x8001 cls=1 flags=0 seq=1 ts=0 lamps=0 gear=0x50 speed10=0 mode=0 accel=0 wheel10=0 brake=0 hex=5a431101018001000100000000000000000000000050000000000000 00
