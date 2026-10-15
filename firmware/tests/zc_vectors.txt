@@ -1,0 +1,43 @@
+# Golden vectors for the ZC core frame (t1s_node/zc_core.h), version 1.0.
+# Written by hand from the byte table in zc_core.h, not produced by either encoder: the C test
+# (zc_core_test.c) and the bench console's Python encoder (t1s-zone-bench tools/zc_core.py,
+# tests/test_zc.py) must both reproduce these bytes and decode them back to these fields.
+#
+# One message per line: <kind> <name> key=value ... hex=<bytes>; hex= takes the rest of the line, spaces ignored
+#   kinds with a payload: state_in sensors_out zone_diag indicator ack
+#     header keys: version (default 0x10) type id cls flags seq ts
+#   reject: hex must fail to decode with err (-1 short, -2 magic, -3 major, -4 payload too short for the id)
+#   wire:   zc_wire_of(hex) == wire (0 unknown, 1 zc, 2 VST1/VST2, 3 SNS1, 4 legacy T1S-EVT)
+# Numbers are decimal or 0x hex.
+
+# VST2's example from PACKETS.md as bundle 0x8001: left lit + brake, D, 42.3 km/h, manual, accel 35 %, wheel -12.5 deg
+state_in vst2_example type=1 id=0x8001 cls=1 flags=0 seq=1234 ts=0x123456789 lamps=5 gear=0x44 speed10=423 mode=0 accel=35 wheel10=-125 brake=0 hex=5a431001018001 00d204000089674523010000000544a701002383ff00
+# an edge (lamp change, off the grid) with a gPTP stamp, sequence at its wrap point, R, -5.5 km/h, autoware, 450 deg, full brake
+state_in edge_gptp type=1 id=0x8001 cls=1 flags=0x12 seq=0xffffffff ts=1234567890123 lamps=0x13 gear=0x52 speed10=-55 mode=2 accel=0 wheel10=4500 brake=100 hex=5a431001018001 12ffffffffcb04fb711f010000 1352c9ff0200941164
+# SNS1's example as bundle 0x8002, gPTP stamp of the RCP read: stick 2020/2085, prox 3, I2C+SPI open, 1 gear event 'D'
+sensors_out sns1_example type=1 id=0x8002 cls=1 flags=0x02 seq=5678 ts=86400123456789 x=2020 y=2085 prox=3 sflags=0x13 gear_event=0x44 hex=5a431001028001022e16000015cdaa98944e0000e407250803001344
+# the zone in its safe state (no fresh vehicle state), nothing read, local clock 0
+sensors_out safe_unread type=1 id=0x8002 cls=1 flags=0x20 seq=0 ts=0 x=0xffff y=0xffff prox=0xffff sflags=0 gear_event=0 hex=5a43100102800120 00000000 0000000000000000 ffffffffffff0000
+# the PC's indicator event: hazard, ACK requested, PC microsecond clock (no gPTP)
+indicator hazard type=2 id=0x0110 cls=0 flags=0x01 seq=56 ts=0xae345cbb code=3 hex=5a4310021001000138000000bb5c34ae0000000003
+# the zone's ACK of it: accepted
+ack ok type=4 id=0x0110 cls=0 flags=0 seq=7 ts=0x8070605040302010 acked=56 result=0 hex=5a4310041001000007000000102030405060708038000000 00000000
+# an ACK refusing the next one: out of range, ACK stamped in gPTP
+ack range type=4 id=0x0110 cls=0 flags=0x02 seq=8 ts=1234567890123 acked=57 result=1 hex=5a4310041001000208000000cb04fb711f0100003900000001000000
+# zone.diag 1 Hz: 3.1 ms last cycle, 5.158 ms max, 70000 failed cycles, 2 overruns
+zone_diag diag type=5 id=0x0010 cls=2 flags=0 seq=3 ts=1000000 busy_us=3100 busy_max_us=5158 failed_cycles=70000 overruns=2 hex=5a431005100002000300000040420f00000000001c0c26147011010002000000
+
+# decode only: a 1.1 sender (minor newer) is accepted; the encoders always write 1.0
+state_in minor_1_1 version=0x11 type=1 id=0x8001 cls=1 flags=0 seq=1 ts=0 lamps=0 gear=0x50 speed10=0 mode=0 accel=0 wheel10=0 brake=0 hex=5a431101018001000100000000000000000000000050000000000000 00
+
+reject short19 err=-1 hex=5a4310010180010 0d204000089674523010000
+reject magic err=-2 hex=56535432d20400000544a70100238 3ff0000000000
+reject major2 err=-3 hex=5a432001018001 00d204000089674523010000000544a701002383ff00
+reject state_in_8B err=-4 hex=5a431001018001 00d204000089674523010000000544a701002383ff
+
+wire vst2 wire=2 hex=56535432d20400000544a701002383ff00
+wire vst1 wire=2 hex=56535431d20400000544a7010023
+wire sns1 wire=3 hex=534e53312e160000e40725080300134 41c0c0000
+wire evt_legacy wire=4 hex=0054564538000000bb5c34ae
+wire zc wire=1 hex=5a4310021001000138000000bb5c34ae0000000003
+wire unknown wire=0 hex=68656c6c6f

@@ -685,6 +685,18 @@ static const char *evtName(uint8_t c) {
   return c == 1 ? "left" : c == 2 ? "right" : c == 3 ? "hazard" : c == 4 ? "horn" : c == 5 ? "flash" : "off";
 }
 
+// The same event in the common ZC header (zc_core.h, `wire zc`): EVENT id 0x0110 body.lights.indicator, payload the
+// code, flags.ACK_REQ. The answer is a ZC ACK (id 0x0110, the event's sequence, a result), sent before acting, as
+// above. A repeated sequence (the sender's retransmission) is answered again but not acted on twice. Result 1 = code
+// out of range, 2 = gPTP-stamped more than 5 ms from this node's gPTP clock (both clocks locked), 5 = unknown id.
+// Incoming events are taken in either format; the reply uses the format of the request.
+static volatile uint32_t gZcEvt = 0, gZcEvtRepeat = 0, gZcEvtRefused = 0;
+static uint32_t gZcAckSeq = 0;      // the ACK sender's own sequence (this task only)
+static void evtAct(uint8_t code) {
+  if (code == 4) gHornUntil = millis() + 600;
+  else if (code == 5) gFlashUntil = millis() + 500;
+  else if (code <= 3) gIndicator = code;
+}
 static void evtTask(void *) {
   int s = socket(AF_INET, SOCK_DGRAM, 0);
   sockaddr_in a = {};
@@ -692,12 +704,24 @@ static void evtTask(void *) {
   a.sin_port = htons(5006);
   a.sin_addr.s_addr = htonl(INADDR_ANY);
   bind(s, (sockaddr *)&a, sizeof(a));
-  EvtMsg m;
+  uint8_t b[64];
+  uint32_t lastIp = 0, lastSeq = 0;
+  bool haveLast = false;
   for (;;) {
     sockaddr_in from = {};
     socklen_t fl = sizeof(from);
-    if (recvfrom(s, &m, sizeof(m), 0, (sockaddr *)&from, &fl) != (int)sizeof(m)) continue;
-    if ((m.magic & 0xFFFFFF00u) != (kEvtMagic & 0xFFFFFF00u)) continue;
+    const int n = recvfrom(s, b, sizeof(b), 0, (sockaddr *)&from, &fl);
+    const int w = n > 0 ? zc_wire_of(b, n) : ZC_WIRE_UNKNOWN;
+    zc_hdr_t h;
+    if (w == ZC_WIRE_ZC) {
+      if (zc_get_hdr(b, n, &h) != ZC_OK || h.type != ZC_EVENT) continue;   // ACKs to our own `evt` are read there
+    } else if (w == ZC_WIRE_EVT) {
+      EvtMsg m;
+      memcpy(&m, b, sizeof(m));
+      if ((m.magic & 0xFFFFFF00u) != (kEvtMagic & 0xFFFFFF00u)) continue;
+    } else {
+      continue;
+    }
     // at most 20 acks a second (a sender makes a few per second): whatever happens to the receive path, the
     // answers can never outgrow the questions by more than that
     static uint32_t winMs = 0, inWin = 0, dropped = 0;
@@ -706,13 +730,34 @@ static void evtTask(void *) {
       winMs = millis(); inWin = 0; dropped = 0;
     }
     if (++inWin > 20) { dropped++; continue; }
-    sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);   // ack first, then act
-    const uint8_t code = m.magic & 0xFF;
-    if (code == 4) gHornUntil = millis() + 600;
-    else if (code == 5) gFlashUntil = millis() + 500;
-    else if (code <= 3) gIndicator = code;
-    Con.printf("evt: %s (from " IPSTR ", seq %lu)\n", evtName(code),
-               IP2STR((esp_ip4_addr_t *)&from.sin_addr.s_addr), (unsigned long)m.seq);
+    if (w == ZC_WIRE_EVT) {
+      EvtMsg m;
+      memcpy(&m, b, sizeof(m));
+      sendto(s, &m, sizeof(m), 0, (sockaddr *)&from, fl);   // ack first, then act
+      const uint8_t code = m.magic & 0xFF;
+      evtAct(code);
+      Con.printf("evt: %s (from " IPSTR ", seq %lu)\n", evtName(code),
+                 IP2STR((esp_ip4_addr_t *)&from.sin_addr.s_addr), (unsigned long)m.seq);
+      continue;
+    }
+    uint8_t code = 0xFF, result = ZC_ACK_OK;
+    uint8_t af = 0;
+    const uint64_t now = zone::zcNow(&af);
+    if (h.id != ZC_ID_INDICATOR) result = ZC_ACK_UNKNOWN;
+    else if (zc_get_indicator(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &code) != ZC_OK || code > 5) result = ZC_ACK_RANGE;
+    else if ((h.flags & ZC_F_TS_VALID) && (af & ZC_F_TS_VALID) && !zc_ts_fresh(now, h.ts, ZC_EVENT_MAX_AGE_NS)) result = ZC_ACK_STALE;
+    const bool repeat = haveLast && from.sin_addr.s_addr == lastIp && h.seq == lastSeq;
+    if (h.flags & ZC_F_ACK_REQ) {
+      uint8_t ack[ZC_HDR_LEN + ZC_LEN_ACK];
+      sendto(s, ack, zc_msg_ack(ack, h.id, h.cls, af, gZcAckSeq++, now, h.seq, result), 0, (sockaddr *)&from, fl);
+    }
+    if (repeat) { gZcEvtRepeat = gZcEvtRepeat + 1; continue; }
+    if (result != ZC_ACK_OK) { gZcEvtRefused = gZcEvtRefused + 1; continue; }
+    haveLast = true; lastIp = from.sin_addr.s_addr; lastSeq = h.seq;
+    gZcEvt = gZcEvt + 1;
+    evtAct(code);
+    Con.printf("evt: %s (from " IPSTR ", zc seq %lu)\n", evtName(code), IP2STR((esp_ip4_addr_t *)&from.sin_addr.s_addr),
+               (unsigned long)h.seq);
   }
 }
 
@@ -731,9 +776,32 @@ static void cmdEvt(const char *rest) {
   if (!inet_aton(host, &to.sin_addr)) { Con.println("evt: bad address"); close(s); return; }
   timeval tv = {0, 50000};
   setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-  EvtMsg m = {kEvtMagic & 0xFFFFFF00u | (code & 0xFF), ++seq, (uint32_t)esp_timer_get_time()}, in;
-  sendto(s, &m, sizeof(m), 0, (sockaddr *)&to, sizeof(to));
+  const uint32_t t0 = (uint32_t)esp_timer_get_time();
   long rtt = -1;
+  ++seq;
+  if (zone::gWire == 1) {
+    uint8_t b[ZC_HDR_LEN + ZC_LEN_ACK + 8], f = ZC_F_ACK_REQ;
+    const uint64_t ts = zone::zcNow(&f);
+    sendto(s, b, zc_msg_indicator(b, f, seq, ts, (uint8_t)code), 0, (sockaddr *)&to, sizeof(to));
+    int n;
+    uint8_t result = 0xFF;
+    while ((n = recv(s, b, sizeof(b), 0)) > 0) {
+      zc_hdr_t h;
+      zc_ack_t ak;
+      if (zc_get_hdr(b, n, &h) == ZC_OK && h.type == ZC_ACK && h.id == ZC_ID_INDICATOR &&
+          zc_get_ack(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &ak) == ZC_OK && ak.seq == seq) {
+        rtt = (long)((uint32_t)esp_timer_get_time() - t0);
+        result = ak.result;
+        break;
+      }
+    }
+    close(s);
+    if (rtt >= 0) Con.printf("evt: %s zc seq %lu acked in %ld us, result %u\n", evtName(code), (unsigned long)seq, rtt, result);
+    else Con.printf("evt: %s zc seq %lu no ack within 50 ms\n", evtName(code), (unsigned long)seq);
+    return;
+  }
+  EvtMsg m = {kEvtMagic & 0xFFFFFF00u | (code & 0xFF), seq, t0}, in;
+  sendto(s, &m, sizeof(m), 0, (sockaddr *)&to, sizeof(to));
   while (recv(s, &in, sizeof(in), 0) == (int)sizeof(in))
     if (in.seq == m.seq) { rtt = (long)((uint32_t)esp_timer_get_time() - m.tUs); break; }
   close(s);
@@ -1291,6 +1359,13 @@ static void gmTask(void *) {
   vTaskDelete(nullptr);
 }
 
+// zone.h's ZC timestamps: the LAN8651 wall clock, only while `ptp gm` follows a grandmaster and its last offset is
+// recent (< 3 s) and small (< 100 us); otherwise false without an SPI access
+static bool ptpReadLocked(int64_t *ns) {
+  if (!gMac || !gGmRun || !gGmOffAt || millis() - gGmOffAt > 3000 || llabs(gLockOffNs) > 100000) return false;
+  *ns = tsuNow();
+  return true;
+}
 // `stat [ms|off]`: one machine-readable line per period, for a console that only has the USB serial (a Mac: no
 // AF_PACKET, and the EVB's PLCA needs Linux). Format, kept stable: "stat:" then space-separated key=value pairs,
 // never reordered, new keys only appended. Counters are totals since boot (or `txstat reset`).
@@ -1302,6 +1377,7 @@ static void gmTask(void *) {
 //   zone      off|wait|run                led   LED frames sent       rcp / rcpto   RCP calls / timeouts
 //   sns       sensor packets sent         state fresh|stale|none (vehicle state in)   heap  internal RAM free (B)
 //   align     on|off (zone align)         aaf   AAF frames seen on the bus
+//   fmt       legacy|zc (`wire` command)  heapmin  lowest internal RAM free since boot (B)
 static volatile uint16_t gStatMs = 0;
 static void statTask(void *) {
   for (;;) {
@@ -1318,7 +1394,8 @@ static void statTask(void *) {
       snprintf(age, sizeof(age), "%lu", (unsigned long)((millis() - gGmOffAt) / 1000));
     } else { strcpy(ptp, "na"); strcpy(age, "na"); }
     Con.printf("stat: ms=%lu plca=%s link=%s gate=%s tx=%lu wire=%lu gated=%lu nomem=%lu xcol=%lu flood=%lu rx=%lu "
-               "ptp=%s ptpage=%s zone=%s led=%lu rcp=%lu rcpto=%lu sns=%lu state=%s heap=%u align=%s aaf=%lu\n",
+               "ptp=%s ptpage=%s zone=%s led=%lu rcp=%lu rcpto=%lu sns=%lu state=%s heap=%u align=%s aaf=%lu fmt=%s "
+               "heapmin=%u\n",
                (unsigned long)millis(), plca, gLinkUp ? "up" : "down", !gGateOn ? "off" : gGateClosed ? "closed" : "open",
                (unsigned long)host, (unsigned long)gWireTx, (unsigned long)gGated, (unsigned long)gTx.nomem,
                (unsigned long)gXcol, (unsigned long)gFloodTrips, (unsigned long)gRxAll, ptp, age,
@@ -1326,7 +1403,8 @@ static void statTask(void *) {
                (unsigned long)zone::gRcpCalls, (unsigned long)zone::gRcpTimeouts, (unsigned long)zone::gSnsSeq,
                !zone::gStCount ? "none" : zone::gStFresh ? "fresh" : "stale",
                (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL), zone::gAlign ? "on" : "off",
-               (unsigned long)zone::gAafSeen);
+               (unsigned long)zone::gAafSeen, zone::gWire ? "zc" : "legacy",
+               (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
   }
 }
 static void cmdStat(const char *a) {
@@ -1785,6 +1863,7 @@ static void help() {
       "identify [sec]             strobe the board LED (default 15 s) to find this board\n"
       "tele [ms|off]              one telemetry line every ms (wheel, ctl, received command, ptp, zenoh peers)\n"
       "stat [ms|off]              one machine-readable key=value status line every ms (default 1000)\n"
+      "wire [legacy|zc]           zone messages sent as VST2/SNS1/T1S-EVT or in the common ZC header (saved)\n"
       "txstat [reset]             frames handed to the chip by class, refusals, chip wire count, XCOL, TO/BEACON counts\n"
       "txgate [on|off]            refuse frames while the node has no PLCA transmit opportunity (default on)\n"
       "txstall <ms> [plca]        test: MAC transmitter off, or no transmit opportunity (PLCA ID 9, not saved)\n"
@@ -1826,6 +1905,7 @@ static void handleLine(char *line) {
     Con.printf("zenoh: %s at boot (saved)%s\n", on ? "started" : "not started", on && !gZenohStarted ? " -- reboot to start it" : "");
   }
   else if (!strcmp(cmd, "zenoh")) zenohT1sCommand(rest);
+  else if (!strcmp(cmd, "wire")) zone::wireCommand(rest);
   else if (!strcmp(cmd, "zone")) { zone::command(rest); if (!*rest || !strcmp(rest, "status")) zl::status(); }
   else if (!strcmp(cmd, "sink")) cmdSink(n >= 1 && !strcmp(a, "reset"));
   else if (!strcmp(cmd, "counters")) cmdCounters(n >= 1 && !strcmp(a, "reset"));
@@ -2034,6 +2114,7 @@ void setup() {
     bridge::gRxTap = onDrvRx;
     xTaskCreate(syncTask, "udp_sync", 4096, nullptr, 6, nullptr);
     if (gMac) xTaskCreate(txWatchTask, "txwatch", 3072, nullptr, 3, nullptr);   // `txstat`, `txgate`
+    zone::gPtpRead = ptpReadLocked;
     zone::begin(gEth);   // zone controller (runs if `zone on` was saved, see zone.h)
     zl::begin();         // its ZoneLink keys (declared when a Zenoh session opens)
     // Zenoh over T1S in its own task (a no-op unless built with T1S_WITH_ZENOH; skipped after `zenoh off`)

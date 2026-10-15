@@ -260,6 +260,17 @@ two 10x10 LED panels (one 20x10 RTP raw-RGB frame to UDP 5001).
   (from a reset or a dead client): the handle range is closed and the open is tried again.
 - `zone_render.h` / `zone_wtlv.h` are plain C. `tests/zone_render_test.c` builds them on a PC so a reference
   implementation can compare frames and request bytes.
+- **Common ZC header (`zc_core.h`, `wire legacy|zc`).** The same messages can travel in one fixed 20-byte header
+  (magic `ZC`, version, type, id, deadline class, flags, sequence u32, timestamp u64; little-endian), on the same
+  ports: vehicle state = bundle 0x8001, sensors = bundle 0x8002 (+ `zone.diag` 0x0010 at 1 Hz for the work time and
+  failed cycles), body event = EVENT 0x0110 answered by an ACK (acked sequence + result; a retransmitted sequence is
+  acked again but not acted on twice). Received messages are told apart by their first bytes, so both formats are
+  always accepted; `wire` only picks what this node sends (saved). With `ptp gm` locked, timestamps are gPTP ns
+  (flag TS_VALID): the LAN8651 clock is read once per 50 ms cycle and esp_timer is mapped onto it in between; else
+  they are esp_timer microseconds. No vehicle state for 0.5 s still means "no link" with the proximity bar, and in
+  ZC every sensors message then carries the SAFE flag. The byte table is at the top of `zc_core.h`;
+  `tests/zc_core_test.c` checks it against hand-written golden vectors (`tests/zc_vectors.txt`):
+  `cc -std=c99 -Wall -Wextra -Werror -It1s_node -o /tmp/zc tests/zc_core_test.c && /tmp/zc tests/zc_vectors.txt && /tmp/zc`.
 
 ```
 zone ip 192.168.0.65 192.168.0.50     alias, endpoint (saved)
@@ -268,6 +279,7 @@ zone bright 0.35 | status | reset     brightness (saved), counters, clear statis
 zenoh on | off                        start Zenoh at boot or not (saved)
 zone align on | off [us [ms]]         transmit schedule, below (saved, on by default; us = extra wait after the
                                       AAF frame, default 0; ms = RCP start after the tick, default 20)
+wire [legacy | zc]                    what the zone sends: VST2/SNS1/T1S-EVT or the ZC header (saved; both are received)
 ```
 
 Measured against a LAN8661 (2026-10-08, with the timestamp build and `ptp gm` running): 20.00 frames/s on the
@@ -360,7 +372,7 @@ driver for PLCA, and a Mac has no AF_PACKET for the console's sniffer. What a Ma
   `tty.`); USB VID 303a, PID 1001, serial number = the board's MAC.
 - `stat [ms|off]` prints one line per period, meant for parsing and kept stable (keys only appended, never reordered):
   `stat: ms=.. plca=0/8 link=up gate=open tx=.. wire=.. gated=.. nomem=.. xcol=.. flood=.. rx=.. ptp=-12 ptpage=0
-  zone=run led=.. rcp=.. rcpto=.. sns=.. state=fresh heap=.. align=on aaf=..`. The key list is in `t1s_node.ino` above `statTask`.
+  zone=run led=.. rcp=.. rcpto=.. sns=.. state=fresh heap=.. align=on aaf=.. fmt=legacy|zc heapmin=..`. The key list is in `t1s_node.ino` above `statTask`.
 - Other lines worth parsing, all one line each: `ptpg: <n> offset <ns> ns spread <ns> ns freq <ppb> ppb (<pairs>/8)`,
   `txgate: closed|open ...`, `flood: ...`, `zone: ...`, and the boot banner `== T1S HAT node` (a reset: `ptp on` and
   `ptp gm` are gone and must be sent again, the zone loop comes back by itself from NVS).

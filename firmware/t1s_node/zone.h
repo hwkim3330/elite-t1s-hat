@@ -24,7 +24,14 @@
 //           open, bit2 state fresh, bits 4-7 gear event counter), char last gear event (0 = none yet),
 //           u16 frame loop work time this cycle (us), u16 failed RCP cycles so far               = 20 bytes
 //           A new event = the counter changed, so a lost packet does not lose a gear change.
-// Settings (`zone ip`, `zone on|off`, `zone bright`, `zone align`) are kept in NVS.
+//   ZC      the same two messages in the common 20-byte "ZC" header (zc_core.h: bundles 0x8001 state_in and 0x8002
+//           sensors_out, plus 0x0010 zone.diag at 1 Hz for the work time and failed cycles), on the same ports.
+//           State in is taken in either format (told apart by the first bytes); what goes out is set by
+//           `wire legacy|zc` (saved). A ZC header carries a sequence, a deadline class and a timestamp: the gPTP time
+//           when this node's clock follows a grandmaster (`ptp gm`, flags.TS_VALID), else esp_timer microseconds.
+//           Safe state: no vehicle state for 0.5 s (or a gPTP-stamped one older than that) -> "no link" on the panels
+//           with the proximity bar, and flags.SAFE on every sensors_out until the state is fresh again.
+// Settings (`zone ip`, `zone on|off`, `zone bright`, `zone align`, `wire`) are kept in NVS.
 #pragma once
 #include <Arduino.h>
 #include <Preferences.h>
@@ -35,6 +42,7 @@
 #include <lwip/sockets.h>
 #include "zone_render.h"
 #include "zone_wtlv.h"
+#include "zc_core.h"
 
 namespace zone {
 
@@ -62,6 +70,54 @@ static volatile bool gWant = false;     // asked for (`zone on`, saved)
 static volatile bool gRunning = false;  // the task's own view: handles may be open
 static float gBright = 0.35f;
 static Preferences gZPrefs;
+
+// ---- ZC wire format (`wire legacy|zc`, saved) and the timestamp source
+static volatile uint8_t gWire = 0;                 // 0 legacy (VST2/SNS1/T1S-EVT), 1 ZC
+// the gPTP clock: set by the sketch; true + the LAN8651 wall clock (ns) only while `ptp gm` holds a recent lock, false
+// without touching the SPI otherwise. Read once per frame cycle; stamps in between are mapped from esp_timer.
+static bool (*gPtpRead)(int64_t *ns) = nullptr;
+static portMUX_TYPE gMapMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool gPtpLocked = false;
+static int64_t gMapNs = 0, gMapUs = 0;             // a (gPTP ns, esp_timer us) pair
+static double gMapRate = 1.0;                      // gPTP ns per esp_timer ns, from the last two pairs
+static uint32_t gClockReads = 0, gClockSlow = 0, gClockUsMax = 0;
+static uint64_t gClockUsSum = 0;
+static const int64_t kClockReadMaxUs = 200;        // a slower read (SPI busy) leaves its midpoint too uncertain
+// once per frame cycle, after the sensors went out, and only with `wire zc` (legacy sends no timestamps)
+static void clockSample() {
+  if (gWire != 1) { gPtpLocked = false; return; }
+  int64_t ns = 0;
+  const int64_t a = esp_timer_get_time();
+  const bool ok = gPtpRead && gPtpRead(&ns);
+  const int64_t b = esp_timer_get_time();
+  if (!ok) { gPtpLocked = false; return; }
+  gClockReads++;
+  gClockUsSum += (uint64_t)(b - a);
+  if ((uint32_t)(b - a) > gClockUsMax) gClockUsMax = (uint32_t)(b - a);
+  if (b - a > kClockReadMaxUs) { gClockSlow++; return; }   // keep the last good pair
+  const int64_t mid = (a + b) / 2;
+  portENTER_CRITICAL(&gMapMux);
+  if (gPtpLocked && mid - gMapUs > 20000 && mid - gMapUs < 2000000) {
+    const double r = (double)(ns - gMapNs) / ((double)(mid - gMapUs) * 1000.0);
+    if (r > 0.9995 && r < 1.0005) gMapRate = r;    // (a clock step in between gives nonsense: keep the old rate)
+  } else if (!gPtpLocked) {
+    gMapRate = 1.0;
+  }
+  gMapNs = ns;
+  gMapUs = mid;
+  gPtpLocked = true;
+  portEXIT_CRITICAL(&gMapMux);
+}
+// the ZC timestamp for esp_timer time us: gPTP ns (and flags.TS_VALID) when locked and the pair is < 1 s old, else us
+static uint64_t zcStamp(int64_t us, uint8_t *flags) {
+  portENTER_CRITICAL(&gMapMux);
+  const bool ok = gPtpLocked && us - gMapUs < 1000000 && gMapUs - us < 1000000;
+  const int64_t ns = gMapNs + (int64_t)((double)(us - gMapUs) * 1000.0 * gMapRate);
+  portEXIT_CRITICAL(&gMapMux);
+  if (ok) { *flags |= ZC_F_TS_VALID; return (uint64_t)ns; }
+  return (uint64_t)us;
+}
+static uint64_t zcNow(uint8_t *flags) { return zcStamp(esp_timer_get_time(), flags); }
 
 // ---- transmit schedule (`zone align on|off [delay_us [rcp_ms]]`, saved; on by default). With it on:
 //  - one esp_timer ticks every 50 ms; both tasks run from that tick, so the period is exact and the phase between
@@ -342,6 +398,10 @@ static int readAdc(int ch, int ms = 300) {
 static int gSock = -1;
 static zr_state gSt;
 static uint32_t gStAt = 0, gStCount = 0, gStBad = 0, gStSeq = 0;   // millis of the last state
+static uint32_t gStZc = 0, gStOld = 0, gStRepeat = 0;               // ZC state in: taken, too old (gPTP), repeated seq
+static zc_seq_t gStTrack = {0, 0, 0, 0};
+static uint32_t gDiagSeq = 0, gBusyMaxDiag = 0;
+static volatile int64_t gSampleUs = 0;    // esp_timer when the last full set of sensor readings was taken
 static bool gStFresh = false;
 static sockaddr_in gPeer;
 static bool gPeerKnown = false;
@@ -396,14 +456,31 @@ static void stateIn() {
   socklen_t fl = sizeof(from);
   int n;
   while ((n = recvfrom(gSock, b, sizeof(b), MSG_DONTWAIT, (sockaddr *)&from, &fl)) > 0) {
-    const bool v2 = n >= 17 && !memcmp(b, "VST2", 4), v1 = n >= 14 && !memcmp(b, "VST1", 4);
     fl = sizeof(from);
-    if (!v1 && !v2) { gStBad++; continue; }
-    int16_t speed10, wheel10 = 0;
-    memcpy(&gStSeq, b + 4, 4);
-    memcpy(&speed10, b + 10, 2);
-    if (v2) memcpy(&wheel10, b + 14, 2);
-    if (!zlFresh()) applyState(b[8], (char)b[9], speed10 / 10.0, b[12], b[13] / 100.0, v2 ? wheel10 / 10.0 : 0, v2 ? b[16] / 100.0 : 0);
+    const int w = zc_wire_of(b, n);
+    if (w == ZC_WIRE_ZC) {                         // bundle 0x8001 in the common header
+      zc_hdr_t h;
+      zc_state_in_t z;
+      if (zc_get_hdr(b, n, &h) != ZC_OK || h.type != ZC_STATE || h.id != ZC_ID_STATE_IN ||
+          zc_get_state_in(b + ZC_HDR_LEN, n - ZC_HDR_LEN, &z) != ZC_OK) { gStBad++; continue; }
+      if (!zc_seq_take(&gStTrack, h.seq)) { gStRepeat++; continue; }
+      if (h.flags & ZC_F_TS_VALID) {               // sampled too long ago on the sender's gPTP clock: not fresh
+        uint8_t f = 0;
+        const uint64_t now = zcNow(&f);
+        if ((f & ZC_F_TS_VALID) && !zc_ts_fresh(now, h.ts, (uint64_t)ZC_STATE_IN_MAX_AGE_MS * 1000000ULL)) { gStOld++; continue; }
+      }
+      gStSeq = h.seq;
+      gStZc++;
+      if (!zlFresh()) applyState(z.lamps, (char)z.gear, z.speed10 / 10.0, z.mode, z.accel / 100.0, z.wheel10 / 10.0, z.brake / 100.0);
+    } else {
+      const bool v2 = n >= 17 && w == ZC_WIRE_VST && b[3] == '2', v1 = w == ZC_WIRE_VST && b[3] == '1';
+      if (!v1 && !v2) { gStBad++; continue; }
+      int16_t speed10, wheel10 = 0;
+      memcpy(&gStSeq, b + 4, 4);
+      memcpy(&speed10, b + 10, 2);
+      if (v2) memcpy(&wheel10, b + 14, 2);
+      if (!zlFresh()) applyState(b[8], (char)b[9], speed10 / 10.0, b[12], b[13] / 100.0, v2 ? wheel10 / 10.0 : 0, v2 ? b[16] / 100.0 : 0);
+    }
     gPeer = from;
     gPeer.sin_port = htons(5009);
     gPeerKnown = true;
@@ -412,18 +489,36 @@ static void stateIn() {
 
 static void sensorsOut(uint16_t busyUs) {
   if (!gPeerKnown || gSock < 0) return;
-  uint8_t b[20];
-  memcpy(b, "SNS1", 4);
   const uint32_t seq = gSnsSeq++;
-  memcpy(b + 4, &seq, 4);
   const uint16_t x = gX < 0 ? 0xFFFF : gX, y = gY < 0 ? 0xFFFF : gY, pr = gProx < 0 ? 0xFFFF : gProx;
   const uint16_t fails = gFails > 0xFFFF ? 0xFFFF : gFails;
+  static uint8_t seen = 0, snsCount = 0;      // a flick counts here only when ZoneLink did not carry it
+  if (gEventCount != seen) { if (!zlFresh()) snsCount = (snsCount + 1) & 0x0F; seen = gEventCount; }
+  const uint8_t open = (gI2c != 0xFFFF ? 1 : 0) | (gSpi != 0xFFFF ? 2 : 0);
+  if (busyUs > gBusyMaxDiag) gBusyMaxDiag = busyUs;
+  if (gWire == 1) {
+    uint8_t b[ZC_HDR_LEN + ZC_LEN_ZONE_DIAG];
+    uint8_t flags = gStFresh ? 0 : ZC_F_SAFE;
+    const int64_t at = gSampleUs;
+    const uint64_t ts = zcStamp(at ? at : esp_timer_get_time(), &flags);   // when the sensors were read
+    const zc_sensors_out_t so = {x, y, pr, (uint8_t)(open | (snsCount << 4)), (uint8_t)gEvent};
+    sendto(gSock, b, zc_msg_sensors_out(b, flags, seq, ts, &so), 0, (sockaddr *)&gPeer, sizeof(gPeer));
+    if (seq % 20 == 0) {                       // zone.diag, 1 Hz
+      uint8_t df = 0;
+      const uint64_t dts = zcNow(&df);
+      const zc_zone_diag_t d = {busyUs, (uint16_t)(gBusyMaxDiag > 0xFFFF ? 0xFFFF : gBusyMaxDiag), gFails, gOverruns};
+      sendto(gSock, b, zc_msg_zone_diag(b, df, gDiagSeq++, dts, &d), 0, (sockaddr *)&gPeer, sizeof(gPeer));
+      gBusyMaxDiag = 0;
+    }
+    return;
+  }
+  uint8_t b[20];
+  memcpy(b, "SNS1", 4);
+  memcpy(b + 4, &seq, 4);
   memcpy(b + 8, &x, 2);
   memcpy(b + 10, &y, 2);
   memcpy(b + 12, &pr, 2);
-  static uint8_t seen = 0, snsCount = 0;      // a flick counts here only when ZoneLink did not carry it
-  if (gEventCount != seen) { if (!zlFresh()) snsCount = (snsCount + 1) & 0x0F; seen = gEventCount; }
-  b[14] = (gI2c != 0xFFFF ? 1 : 0) | (gSpi != 0xFFFF ? 2 : 0) | (gStFresh ? 4 : 0) | (snsCount << 4);
+  b[14] = open | (gStFresh ? 4 : 0) | (snsCount << 4);
   b[15] = (uint8_t)gEvent;
   memcpy(b + 16, &busyUs, 2);
   memcpy(b + 18, &fails, 2);
@@ -491,6 +586,7 @@ static void rcpTask(void *) {
     }
     if (ok) {
       gX = x; gY = y; gProx = pr;
+      gSampleUs = esp_timer_get_time();
       run = 0;
       backoff = 0;
     } else {
@@ -634,6 +730,8 @@ static void task(void *) {
     gBusySum += us;
     if (us > gBusyMax) gBusyMax = us;
     sensorsOut(us > 0xFFFF ? 0xFFFF : us);
+    clockSample();                    // the gPTP <-> esp_timer pair for the next stamps (`wire zc`, gPTP locked; timed
+                                      // on its own: clock reads avg / max in `zone status`)
   }
 }
 
@@ -646,6 +744,7 @@ static void save() {
   gZPrefs.putBool("align", gAlign);
   gZPrefs.putULong("aldly", gAlignDelayUs);
   gZPrefs.putULong("alrcp", gRcpOffsetMs);
+  gZPrefs.putUChar("wire", gWire);
   gZPrefs.end();
 }
 
@@ -660,6 +759,7 @@ static void begin(esp_eth_handle_t h) {
   gAlign = gZPrefs.getBool("align", true);
   gAlignDelayUs = gZPrefs.getULong("aldly", 0);
   gRcpOffsetMs = gZPrefs.getULong("alrcp", 20);
+  gWire = gZPrefs.getUChar("wire", 0) ? 1 : 0;
   gZPrefs.end();
   // AVTP multicast (the AAF stream) through the MAC's hash filter, in case the MAC is not promiscuous
   // (`ptp gm` makes it so); adds one entry, changes nothing else
@@ -692,6 +792,26 @@ static void alignStatus() {
              (long)(gRcpAfterLedMin == INT32_MAX ? -1 : gRcpAfterLedMin), (long)gRcpAfterLedMax);
 }
 
+static void wireStatus() {
+  Con.printf("zone: wire %s; zc state in %lu (seq gaps %lu, repeats %lu, too old %lu), last seq %lu; zone.diag sent %lu; "
+             "stamps %s (clock reads %lu, avg %lu max %lu us, %lu over %lld us not used)\n",
+             gWire ? "zc" : "legacy", (unsigned long)gStZc, (unsigned long)gStTrack.gaps, (unsigned long)gStRepeat,
+             (unsigned long)gStOld, (unsigned long)gStSeq, (unsigned long)gDiagSeq, gPtpLocked ? "gPTP" : "local us",
+             (unsigned long)gClockReads, (unsigned long)(gClockReads ? gClockUsSum / gClockReads : 0), (unsigned long)gClockUsMax,
+             (unsigned long)gClockSlow, (long long)kClockReadMaxUs);
+}
+// wire [legacy|zc]: the format of what this node sends (sensors out, event acks, `evt`); both are always received
+static void wireCommand(const char *a) {
+  if (!strcmp(a, "legacy") || !strcmp(a, "zc")) {
+    gWire = !strcmp(a, "zc");
+    save();
+  } else if (*a) {
+    Con.println("wire [legacy|zc]");
+    return;
+  }
+  wireStatus();
+}
+
 static void status() {
   Con.printf("zone: %s, alias " IPSTR ", endpoint " IPSTR " %s %02x:%02x:%02x:%02x:%02x:%02x, bright %.2f\n",
              gRunning ? "running" : gWant ? "on (waiting for the endpoint)" : "off",
@@ -713,6 +833,7 @@ static void status() {
              (unsigned long)(gRcpCalls > gRcpTimeouts ? gRcpUsSum / (gRcpCalls - gRcpTimeouts) : 0), (unsigned long)gRcpUsMax,
              (unsigned long)gStCount, (unsigned long)gStBad,
              gStCount ? (gStFresh ? "fresh" : "stale") : "none yet", (unsigned long)gSnsSeq, gEvent ? gEvent : '-', gEventCount);
+  wireStatus();
   alignStatus();
 }
 
@@ -770,6 +891,8 @@ static void command(const char *a) {
     gRcpAfterLedMin = INT32_MAX; gRcpAfterLedMax = 0;
     gLoops = gFails = gOverruns = gBusyMax = gRcpCycles = gRcpCycleMax = gReopens = 0; gBusySum = 0;
     gRcpCalls = gRcpTimeouts = gRcpUsMax = 0; gRcpUsSum = 0;
+    gClockReads = gClockSlow = gClockUsMax = 0; gClockUsSum = 0;
+    gStZc = gStOld = gStRepeat = 0; gStTrack.gaps = gStTrack.dups = 0;
     return status();
   }
   if (!strcmp(a, "rcp") || !strncmp(a, "sense", 5)) {
