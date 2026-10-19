@@ -11,10 +11,12 @@
 #   wire:   zc_wire_of(hex) == wire (0 unknown, 1 zc, 2 VST1/VST2, 3 SNS1, 4 legacy T1S-EVT)
 # Numbers are decimal or 0x hex.
 
-# VST2's example from PACKETS.md as bundle 0x8001: left lit + brake, D, 42.3 km/h, manual, accel 35 %, wheel -12.5 deg
-state_in vst2_example type=1 id=0x8001 cls=1 flags=0 seq=1234 ts=0x123456789 lamps=5 gear=0x44 speed10=423 mode=0 accel=35 wheel10=-125 brake=0 hex=5a431001018001 00d204000089674523010000000544a701002383ff00
-# an edge (lamp change, off the grid) with a gPTP stamp, sequence at its wrap point, R, -5.5 km/h, autoware, 450 deg, full brake
-state_in edge_gptp type=1 id=0x8001 cls=1 flags=0x12 seq=0xffffffff ts=1234567890123 lamps=0x13 gear=0x52 speed10=-55 mode=2 accel=0 wheel10=4500 brake=100 hex=5a431001018001 12ffffffffcb04fb711f010000 1352c9ff0200941164
+# VST2's example from PACKETS.md as bundle 0x8001: left lit + brake, D, 42.3 km/h, manual, accel 35 %, wheel -12.5 deg,
+# no tell-tales
+state_in vst2_example type=1 id=0x8001 cls=1 flags=0 seq=1234 ts=0x123456789 lamps=5 gear=0x44 speed10=423 mode=0 accel=35 wheel10=-125 brake=0 tells=0 hex=5a431001018001 00d204000089674523010000000544a701002383ff00 00
+# an edge (lamp change, off the grid) with a gPTP stamp, sequence at its wrap point, R, -5.5 km/h, autoware, 450 deg, full brake,
+# tell-tales auto high beam on, auto high beam active, lane keeping
+state_in edge_gptp type=1 id=0x8001 cls=1 flags=0x12 seq=0xffffffff ts=1234567890123 lamps=0x13 gear=0x52 speed10=-55 mode=2 accel=0 wheel10=4500 brake=100 tells=0x23 hex=5a431001018001 12ffffffffcb04fb711f010000 1352c9ff0200941164 23
 # SNS1's example as bundle 0x8002, gPTP stamp of the RCP read: stick 2020/2085, prox 3, I2C+SPI open, 1 gear event 'D'
 sensors_out sns1_example type=1 id=0x8002 cls=1 flags=0x02 seq=5678 ts=86400123456789 x=2020 y=2085 prox=3 sflags=0x13 gear_event=0x44 hex=5a431001028001022e16000015cdaa98944e0000e407250803001344
 # the zone in its safe state (no fresh vehicle state), nothing read, local clock 0
@@ -38,12 +40,14 @@ motion_cmd drive type=1 id=0x8003 cls=1 flags=0 seq=7 ts=0 ctl=3 servo_mask=2 wl
 motion_telemetry safe_stop type=1 id=0x8004 cls=1 flags=0x20 seq=99 ts=1 status=513 cmd_age_ms=500 enc_a=7 enc_b=-7 w_a100=100 w_b100=-100 i_a_ma=10 i_b_ma=20 duty_a=-1 duty_b=1 imu_kind=2 imu_flags=0 quat0=16384 quat1=1 quat2=2 quat3=3 accel1000=4 accel1001=5 accel1002=6 gyro10000=7 gyro10001=8 gyro10002=9 servo_us0=1500 servo_us1=1501 servo_us2=1502 servo_us3=1503 veh_steer100=0 veh_speed_mm=0 veh_curv1000=0 vbat_mv=0 profile=0 veh_flags=0 hex=5a431001048001206300000001000000000000000102f40107000000f9ffffff64009cff0a001400ffff010002000040010002000300040005000600070008000900dc05dd05de05df0500000000000000000000
 
 # decode only: a 1.1 sender (minor newer) is accepted; the encoders always write 1.0
-state_in minor_1_1 version=0x11 type=1 id=0x8001 cls=1 flags=0 seq=1 ts=0 lamps=0 gear=0x50 speed10=0 mode=0 accel=0 wheel10=0 brake=0 hex=5a431101018001000100000000000000000000000050000000000000 00
+state_in minor_1_1 version=0x11 type=1 id=0x8001 cls=1 flags=0 seq=1 ts=0 lamps=0 gear=0x50 speed10=0 mode=0 accel=0 wheel10=0 brake=0 tells=0 hex=5a431101018001000100000000000000000000000050000000000000 00 00
 
 reject short19 err=-1 hex=5a4310010180010 0d204000089674523010000
 reject magic err=-2 hex=56535432d20400000544a70100238 3ff0000000000
 reject major2 err=-3 hex=5a432001018001 00d204000089674523010000000544a701002383ff00
 reject state_in_8B err=-4 hex=5a431001018001 00d204000089674523010000000544a701002383ff
+# the 9-byte state_in before the tell-tale byte (catalogue hash 0xd787a7ec): too short now
+reject state_in_9B err=-4 hex=5a431001018001 00d204000089674523010000000544a701002383ff00
 
 wire vst2 wire=2 hex=56535432d20400000544a701002383ff00
 wire vst1 wire=2 hex=56535431d20400000544a7010023

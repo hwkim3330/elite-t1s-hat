@@ -7,7 +7,7 @@
 
 #define ZC_CATALOG_NAME "vehicle-body"
 #define ZC_CATALOG_VERSION 1
-#define ZC_CATALOG_HASH 0xD787A7ECUL   // CRC-32 of the wire contract (zcgen.py canonical()), sent in HEARTBEAT
+#define ZC_CATALOG_HASH 0x74FED3E5UL   // CRC-32 of the wire contract (zcgen.py canonical()), sent in HEARTBEAT
 
 // ---- per item: id, length, header type / class, period and freshness
 // 0x0001 core.heartbeat: HEARTBEAT DIAGNOSTIC, node->gw, port 5009
@@ -64,7 +64,7 @@
 
 // 0x8001 zone.body.state_in: STATE PERIODIC, gw->zone, port 5008
 #define ZC_ID_STATE_IN 0x8001
-#define ZC_LEN_STATE_IN 9
+#define ZC_LEN_STATE_IN 10
 #define ZC_TYPE_STATE_IN 1
 #define ZC_CLASS_STATE_IN 1
 #define ZC_PERIOD_MS_STATE_IN 50
@@ -86,6 +86,12 @@
 #define ZC_STATE_IN_MODE_MANUAL 0
 #define ZC_STATE_IN_MODE_AUTOPILOT 1
 #define ZC_STATE_IN_MODE_AUTOWARE 2
+#define ZC_STATE_IN_TELLS_HBA (1u << 0)
+#define ZC_STATE_IN_TELLS_HBA_ACTIVE (1u << 1)
+#define ZC_STATE_IN_TELLS_FOG_FRONT (1u << 2)
+#define ZC_STATE_IN_TELLS_FOG_REAR (1u << 3)
+#define ZC_STATE_IN_TELLS_SCC (1u << 4)
+#define ZC_STATE_IN_TELLS_LKA (1u << 5)
 
 // 0x8002 zone.body.sensors_out: STATE PERIODIC, zone->gw, port 5009
 #define ZC_ID_SENSORS_OUT 0x8002
@@ -184,6 +190,7 @@ typedef struct {
   uint8_t accel;  // %
   int16_t wheel10;  // x 0.1 deg
   uint8_t brake;  // %
+  uint8_t tells;
 } zc_state_in_t;
 typedef struct {
   uint16_t x;
@@ -332,6 +339,7 @@ static inline int zc_put_state_in(uint8_t *p, const zc_state_in_t *s) {
   p[5] = (uint8_t)s->accel;
   zc_w16(p + 6, (uint16_t)s->wheel10);
   p[8] = (uint8_t)s->brake;
+  p[9] = (uint8_t)s->tells;
   return ZC_LEN_STATE_IN;
 }
 static inline int zc_get_state_in(const uint8_t *p, size_t n, zc_state_in_t *s) {
@@ -343,6 +351,7 @@ static inline int zc_get_state_in(const uint8_t *p, size_t n, zc_state_in_t *s) 
   s->accel = (uint8_t)p[5];
   s->wheel10 = (int16_t)zc_r16(p + 6);
   s->brake = (uint8_t)p[8];
+  s->tells = (uint8_t)p[9];
   return ZC_OK;
 }
 // header + payload into b (room for ZC_HDR_LEN + ZC_LEN_STATE_IN), returns the datagram length
@@ -523,7 +532,7 @@ static const zc_item_t zc_catalog[] = {
     {0x0010, 5, 2, 0, 2, 12, 1000, 3000, 5009, "zone.diag"},
     {0x0110, 2, 0, 1, 1, 1, 0, 5, 5006, "body.lights.indicator"},
     {0x0120, 3, 0, 1, 0, 1, 0, 5, 5009, "powertrain.gear.target"},
-    {0x8001, 1, 1, 0, 1, 9, 50, 500, 5008, "zone.body.state_in"},
+    {0x8001, 1, 1, 0, 1, 10, 50, 500, 5008, "zone.body.state_in"},
     {0x8002, 1, 1, 0, 0, 8, 50, 150, 5009, "zone.body.sensors_out"},
     {0x8003, 1, 1, 0, 3, 26, 20, 500, 5008, "motion.cmd"},
     {0x8004, 1, 1, 0, 2, 64, 20, 100, 5009, "motion.telemetry"},

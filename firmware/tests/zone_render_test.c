@@ -1,7 +1,8 @@
 // Host build of the zone controller's LED renderer and RCP encoder, for comparison with a reference.
 //   cc -O1 -Wall -I../t1s_node -o zone_render_test zone_render_test.c -lm
-//   render: stdin lines "lamps gear speed mode prox_m since_l since_r bright wheel_deg accel brake"
+//   render: stdin lines "lamps gear speed mode prox_m since_l since_r bright wheel_deg accel brake [tells]"
 //                                                                               -> one line of 1200 hex chars
+//   text:   "text <off> <r> <g> <b> <bright> <string to the end of the line>"  -> the same
 //   no link: "nolink <tick> <bright>"                                           -> the same
 //   wtlv:   stdin lines "wtlv <kind> args..."                                    -> the payload bytes in hex
 //   header: "wtlv header <method> <session> <payload length>"                   -> the 16 SOME/IP header bytes
@@ -48,9 +49,23 @@ int main(void) {
       hex(b, n);
       continue;
     }
+    if (!strncmp(line, "text ", 5)) {
+      int off, n = 0;
+      unsigned r, g, b;
+      float br;
+      zr_fb fb, out;
+      if (sscanf(line + 5, "%d %u %u %u %f%n", &off, &r, &g, &b, &br, &n) < 5 || line[5 + n] != ' ') continue;
+      char *t = line + 5 + n + 1;                  // exactly one space: the text may begin with one
+      t[strcspn(t, "\r\n")] = 0;
+      const uint8_t c[3] = {(uint8_t)r, (uint8_t)g, (uint8_t)b};
+      zr_text(fb, t, off, c);
+      zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, zr_bright(br));
+      hex(&out[0][0][0], sizeof out);
+      continue;
+    }
     zr_state s;
     char gear;
-    unsigned lamps, mode, tick;
+    unsigned lamps, mode, tick, tells = 0;
     double since_l, since_r, bright, speed, prox, wheel, accel, brake;
     zr_fb fb, out;
     int nn = sscanf(line, "nolink %u %lf %lf", &tick, &bright, &prox);
@@ -60,9 +75,9 @@ int main(void) {
       hex(&out[0][0][0], sizeof out);
       continue;
     }
-    if (sscanf(line, "%u %c %lf %u %lf %lf %lf %lf %lf %lf %lf", &lamps, &gear, &speed, &mode, &prox, &since_l, &since_r, &bright,
-               &wheel, &accel, &brake) != 11) continue;
-    s.lamps = (uint8_t)lamps; s.gear = gear; s.speed = speed; s.mode = (uint8_t)mode; s.prox_m = prox;
+    if (sscanf(line, "%u %c %lf %u %lf %lf %lf %lf %lf %lf %lf %u", &lamps, &gear, &speed, &mode, &prox, &since_l, &since_r, &bright,
+               &wheel, &accel, &brake, &tells) < 11) continue;
+    s.lamps = (uint8_t)lamps; s.tells = (uint8_t)tells; s.gear = gear; s.speed = speed; s.mode = (uint8_t)mode; s.prox_m = prox;
     s.wheel_deg = wheel; s.accel = accel; s.brake = brake;
     zr_car(fb, &s, since_l, since_r);
     zr_scale(out, (const uint8_t(*)[ZR_W][3])fb, zr_bright((float)bright));

@@ -39,7 +39,7 @@ static void onVehicle(const char *key, size_t kl, const uint8_t *p, size_t n) {
                           (gV[HAZ] ? 16 : 0);
     zone::gZlAt = millis();
     zone::applyState(lamps, g == 126 ? 'P' : g == 127 ? 'D' : g == 0 ? 'N' : g < 0 ? 'R' : 'D', gV[SPEED], (uint8_t)gV[MODE],
-                     gV[ACC] / 100.0, gV[WHEEL], gV[BRK] / 100.0);
+                     gV[ACC] / 100.0, gV[WHEEL], gV[BRK] / 100.0, 0);
     return;
   }
 }

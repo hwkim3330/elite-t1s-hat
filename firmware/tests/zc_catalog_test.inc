@@ -44,6 +44,7 @@ static int zc_cat_enc(const char *kind, const kvs_t *m, uint8_t *p, int *bad) {
     s.accel = (uint8_t)need(m, "accel", bad);
     s.wheel10 = (int16_t)need(m, "wheel10", bad);
     s.brake = (uint8_t)need(m, "brake", bad);
+    s.tells = (uint8_t)need(m, "tells", bad);
     return zc_put_state_in(p, &s);
   }
   if (!strcmp(kind, "sensors_out")) {
@@ -161,6 +162,7 @@ static int zc_cat_dec(uint16_t id, const uint8_t *p, size_t n, char *out, size_t
     o += snprintf(out + o, cap - o, " accel=%llu", (unsigned long long)s.accel);
     o += snprintf(out + o, cap - o, " wheel10=%lld", (long long)s.wheel10);
     o += snprintf(out + o, cap - o, " brake=%llu", (unsigned long long)s.brake);
+    o += snprintf(out + o, cap - o, " tells=%llu", (unsigned long long)s.tells);
     return ZC_OK;
   }
   if (id == ZC_ID_SENSORS_OUT) {

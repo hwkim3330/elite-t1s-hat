@@ -104,9 +104,22 @@ items:
         unit: "%"
         map:
           vss: {key: Vehicle.Chassis.Brake.PedalPosition, type: u8}
+      - name: tells
+        type: u8
+        doc: the tell-tales drawn beside the lamps (zone_render.h)
+        bits: {hba: 0, hba_active: 1, fog_front: 2, fog_rear: 3, scc: 4, lka: 5}
+        map:
+          vss:
+            bits:
+              hba: Vehicle.Private.Lights.HighBeamAssist.IsEnabled
+              hba_active: Vehicle.Private.Lights.HighBeamAssist.IsActive
+              fog_front: Vehicle.Body.Lights.Fog.Front.IsOn
+              fog_rear: Vehicle.Body.Lights.Fog.Rear.IsOn
+              scc: Vehicle.ADAS.CruiseControl.IsActive
+              lka: Vehicle.ADAS.LaneKeepingAssist.IsActive
     examples:
-      - {seq: 1234, ts: 0x123456789, flags: 0, lamps: 5, gear: 0x44, speed10: 423, mode: 0, accel: 35, wheel10: -125, brake: 0}
-      - {seq: 0xFFFFFFFF, ts: 1234567890123, flags: 0x12, lamps: 0x13, gear: 0x52, speed10: -55, mode: 2, accel: 0, wheel10: 4500, brake: 100}
+      - {seq: 1234, ts: 0x123456789, flags: 0, lamps: 5, gear: 0x44, speed10: 423, mode: 0, accel: 35, wheel10: -125, brake: 0, tells: 0}
+      - {seq: 0xFFFFFFFF, ts: 1234567890123, flags: 0x12, lamps: 0x13, gear: 0x52, speed10: -55, mode: 2, accel: 0, wheel10: 4500, brake: 100, tells: 0x23}
 
   - id: 0x8002
     name: zone.body.sensors_out

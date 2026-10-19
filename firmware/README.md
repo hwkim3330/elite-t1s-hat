@@ -69,7 +69,7 @@ about it before.
 |---|---|
 | `t1s_node.ino` | bring-up, PLCA, UDP echo on port 7, serial console |
 | `pins.h` | HAT signal → Elite GPIO, read off LilyGo's schematic (CS_N on IO0 for Rev C / TSN Lab's HAT, IO8 for Rev D; 1PPS in on IO40) |
-| `zone.h`, `zone_render.h`, `zone_wtlv.h` | zone controller: RCP master for LAN866x endpoints (below) |
+| `zone.h`, `zone_render.h`, `zone_glyphs.h`, `zone_wtlv.h` | zone controller: RCP master for LAN866x endpoints (below); `zone_glyphs.h` is generated from `glyphs/zone_glyphs.txt` |
 | `zonelink.h` | the zone controller on Zenoh with VSS keys (`vehicle/speed`, ...) through a zenohd router (`zenoh router udp/<host>:7447`); falls back to the UDP state/sensor packets by itself when no Zenoh state arrives for 1 s |
 | `bridge.h` | bridge mode: W5500 bring-up (no IP, promiscuous) + the two-port learning forwarder |
 | `w5500_spi.h` | from the W5500 bench firmware: the W5500 SPI layer that splits reads at the RX buffer wrap (a real IDF driver bug found there) |
@@ -260,6 +260,13 @@ two 10x10 LED panels (one 20x10 RTP raw-RGB frame to UDP 5001).
   (from a reset or a dead client): the handle range is closed and the open is tried again.
 - `zone_render.h` / `zone_wtlv.h` are plain C. `tests/zone_render_test.c` builds them on a PC so a reference
   implementation can compare frames and request bytes.
+- **LED picture.** Left panel: the gear letter (5x7) and two 3x3 tell-tale slots (lamps: high beam blue, fog,
+  low beam green, a centre dot for auto high beam; below: hazard red, interior light white). Right panel: the speed
+  in 3x5 digits, 0-199 (the hundreds "1" one column wide), and a line under it (cyan = autopilot drives, green =
+  cruise / lane keeping). Row 0: steering wheel marker and the proximity bar; columns 0 / 19: the pedals; rows 8-9:
+  brake / reverse. A lit indicator turns its panel into a sweeping amber arrow. `zone text [rrggbb] <text>` scrolls
+  ASCII text instead (`zone text off`). Fonts, icons and colours are defined once in `glyphs/zone_glyphs.txt`;
+  `glyphs/glyphgen.py` writes `t1s_node/zone_glyphs.h` (and, with `--py`, the same tables for a Python renderer).
 - **Common ZC header (`zc_core.h`, `wire legacy|zc`).** The same messages can travel in one fixed 20-byte header
   (magic `ZC`, version, type, id, deadline class, flags, sequence u32, timestamp u64; little-endian), on the same
   ports: vehicle state = bundle 0x8001, sensors = bundle 0x8002 (+ `zone.diag` 0x0010 at 1 Hz for the work time and

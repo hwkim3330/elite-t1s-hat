@@ -20,6 +20,8 @@
 //           6 low beam, 7 interior), char gear,
 //           i16 speed x10 (km/h), u8 mode (0 manual, 1 autopilot, 2 autoware), u8 accel x100,
 //           i16 steering wheel x10 (deg, + = left), u8 brake pedal x100                          = 17 bytes
+//           [, u8 tell-tales (bit0 auto high beam on, 1 it drives the high beam, 2 front fog, 3 rear fog, 4 SCC,
+//           5 lane keeping)                                                                     = 18 bytes]
 //           ('VST1' = the first 14 bytes, no wheel / brake pedal)
 //   sensors 'SNS1' u32 seq, u16 x, u16 y, u16 prox (0xFFFF = not read), u8 flags (bit0 I2C open, bit1 SPI
 //           open, bit2 state fresh, bits 4-7 gear event counter), char last gear event (0 = none yet),
@@ -36,7 +38,8 @@
 //           Also in ZC (catalogue phase 2): HEARTBEAT 0x0001 once a second (catalogue hash, PLCA id, gPTP state; a
 //           gateway with another catalogue refuses this node), and a stick flick as CMD 0x0120 gear.target with
 //           ACK_REQ to the state sender, sent again with the same seq while no ACK came (3 tries, one per cycle).
-// Settings (`zone ip`, `zone on|off`, `zone bright`, `zone align`, `wire`) are kept in NVS.
+// Settings (`zone ip`, `zone on|off`, `zone bright`, `zone align`, `wire`) are kept in NVS. `zone text` (scrolling
+// text instead of the car view, zone_render.h zr_text) is not: a reboot shows the car again.
 #pragma once
 #include <Arduino.h>
 #include <Preferences.h>
@@ -429,14 +432,20 @@ static uint8_t gEventCount = 0;
 static uint32_t gSnsSeq = 0, gLoops = 0, gFails = 0, gBusyUs = 0, gBusyMax = 0, gOverruns = 0;
 static uint64_t gBusySum = 0;
 static uint32_t gFrames = 0;
+// `zone text`: scrolling text instead of the car view (not saved). The colour and text are read by the frame task.
+static char gText[64] = "";
+static uint8_t gTextRgb[3] = {0, 160, 255};
+static int64_t gTextT0 = 0;
 
 // the vehicle state, from VST2 (stateIn) or from ZoneLink (zonelink.h, the Zenoh task): the frame task copies it
 // under the same lock
 static portMUX_TYPE gStMux = portMUX_INITIALIZER_UNLOCKED;
-static void applyState(uint8_t lamps, char gear, double speed, uint8_t mode, double accel, double wheel, double brake) {
+static void applyState(uint8_t lamps, char gear, double speed, uint8_t mode, double accel, double wheel, double brake,
+                       uint8_t tells) {
   const int64_t now = esp_timer_get_time();
   portENTER_CRITICAL(&gStMux);
-  gSt.lamps = lamps & (uint8_t)~ZR_HAZARD;      // the blinking itself comes as left/right lit
+  gSt.lamps = lamps;          // the blinking itself comes as left/right lit; the hazard bit is the switch (tell-tale)
+  gSt.tells = tells;
   gSt.gear = gear;
   gSt.speed = speed;
   gSt.mode = mode;
@@ -497,7 +506,7 @@ static void stateIn() {
       }
       gStSeq = h.seq;
       gStZc++;
-      if (!zlFresh()) applyState(z.lamps, (char)z.gear, z.speed10 / 10.0, z.mode, z.accel / 100.0, z.wheel10 / 10.0, z.brake / 100.0);
+      if (!zlFresh()) applyState(z.lamps, (char)z.gear, z.speed10 / 10.0, z.mode, z.accel / 100.0, z.wheel10 / 10.0, z.brake / 100.0, z.tells);
     } else {
       const bool v2 = n >= 17 && w == ZC_WIRE_VST && b[3] == '2', v1 = w == ZC_WIRE_VST && b[3] == '1';
       if (!v1 && !v2) { gStBad++; continue; }
@@ -505,7 +514,8 @@ static void stateIn() {
       memcpy(&gStSeq, b + 4, 4);
       memcpy(&speed10, b + 10, 2);
       if (v2) memcpy(&wheel10, b + 14, 2);
-      if (!zlFresh()) applyState(b[8], (char)b[9], speed10 / 10.0, b[12], b[13] / 100.0, v2 ? wheel10 / 10.0 : 0, v2 ? b[16] / 100.0 : 0);
+      if (!zlFresh()) applyState(b[8], (char)b[9], speed10 / 10.0, b[12], b[13] / 100.0, v2 ? wheel10 / 10.0 : 0, v2 ? b[16] / 100.0 : 0,
+                                v2 && n >= 18 ? b[17] : 0);
     }
     gPeer = from;
     gPeer.sin_port = htons(5009);
@@ -696,7 +706,14 @@ static void frameOnce(bool aligned) {
     Con.printf("zone: vehicle state %s\n", gStFresh ? "arriving" : "lost (no update for max_age): \"no link\" on the panels");
     wasFresh = gStFresh;
   }
-  if (gStFresh) {
+  if (gText[0]) {                      // 12 px/s, entering from the right, as the console's text mode
+    char t[sizeof gText];
+    memcpy(t, gText, sizeof t);
+    t[sizeof t - 1] = 0;
+    const int w = zr_text_width(t);
+    const int64_t el = (esp_timer_get_time() - gTextT0) / 1000;      // ms
+    zr_text(fb, t, ZR_W - (int)((el * 12 / 1000) % (w + 1 + ZR_W)), gTextRgb);
+  } else if (gStFresh) {
     portENTER_CRITICAL(&gStMux);
     zr_state s = gSt;
     const int64_t edgeL = gEdgeL, edgeR = gEdgeR;
@@ -906,7 +923,7 @@ static void status() {
 }
 
 // zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep]
-//      | gear <P|R|N|D>
+//      | gear <P|R|N|D> | text [rrggbb] <text> | text off
 static void command(const char *a) {
   char s1[20], s2[20];
   float f;
@@ -955,6 +972,22 @@ static void command(const char *a) {
     }
     return alignStatus();
   }
+  if (!strncmp(a, "text", 4) && (a[4] == ' ' || !a[4])) {   // scrolling text on the panels (ASCII), until `zone text off`
+    const char *t = a[4] ? a + 5 : "";
+    unsigned rgb;
+    int n = 0;
+    if (strlen(t) > 7 && sscanf(t, "%6x%n", &rgb, &n) == 1 && n == 6 && t[6] == ' ') {
+      gTextRgb[0] = rgb >> 16; gTextRgb[1] = rgb >> 8; gTextRgb[2] = rgb;
+      t += 7;
+    }
+    if (!*t || !strcmp(t, "off")) gText[0] = 0;
+    else {
+      gTextT0 = esp_timer_get_time();
+      strlcpy(gText, t, sizeof gText);
+    }
+    Con.printf("zone: text %s\n", gText[0] ? gText : "off (car view)");
+    return;
+  }
   char gch;
   if (sscanf(a, "gear %c", &gch) == 1) {    // a flick without the stick: the same SNS1 event and CMD gear.target
     if (!strchr("PRND", gch)) { Con.println("zone gear P|R|N|D"); return; }
@@ -993,7 +1026,7 @@ static void command(const char *a) {
     if (strstr(a, "keep") == nullptr) sensorsClose();
     return;
   }
-  Con.println("zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep] | gear <P|R|N|D>");
+  Con.println("zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep] | gear <P|R|N|D> | text [rrggbb] <text>|off");
 }
 
 }  // namespace zone
