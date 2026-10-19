@@ -24,11 +24,12 @@ extern "C" {
 
 typedef uint8_t zr_fb[ZR_H][ZR_W][3];
 
-enum { ZR_LEFT = 1, ZR_RIGHT = 2, ZR_BRAKE = 4, ZR_REVERSE = 8, ZR_HAZARD = 16 };
+enum { ZR_LEFT = 1, ZR_RIGHT = 2, ZR_BRAKE = 4, ZR_REVERSE = 8, ZR_HAZARD = 16, ZR_HIGH_BEAM = 32, ZR_LOW_BEAM = 64,
+       ZR_INTERIOR = 128 };
 enum { ZR_MANUAL = 0, ZR_AUTOPILOT = 1, ZR_AUTOWARE = 2 };
 
 typedef struct {
-  uint8_t lamps;      // ZR_LEFT/RIGHT = that lamp is lit right now; BRAKE, REVERSE
+  uint8_t lamps;      // ZR_LEFT/RIGHT = that lamp is lit right now; BRAKE, REVERSE, HIGH_BEAM, LOW_BEAM, INTERIOR
   char gear;          // 'P' 'R' 'N' 'D'
   double speed;       // km/h (negative in reverse)
   uint8_t mode;       // ZR_MANUAL / ZR_AUTOPILOT / ZR_AUTOWARE
@@ -39,7 +40,8 @@ typedef struct {
 } zr_state;
 
 static const uint8_t ZR_AMBER[3] = {255, 110, 0}, ZR_RED[3] = {255, 0, 0}, ZR_WHITE[3] = {200, 200, 200},
-                     ZR_CYAN[3] = {0, 160, 255}, ZR_GREEN[3] = {0, 220, 60}, ZR_VIOLET[3] = {170, 60, 255};
+                     ZR_CYAN[3] = {0, 160, 255}, ZR_GREEN[3] = {0, 220, 60}, ZR_VIOLET[3] = {170, 60, 255},
+                     ZR_BLUE[3] = {0, 60, 255};
 
 // gear letters as drawn by the bench's reference (PIL's default bitmap font): width, 10 rows of bits (bit x)
 typedef struct { char c; uint8_t w; uint16_t rows[10]; uint8_t rgb[3]; } zr_glyph;
@@ -121,6 +123,14 @@ static inline void zr_car(zr_fb fb, const zr_state *s, double since_l, double si
       for (int x = 0; x < ZR_W; x++)
         if (zr_off(fb, y, x)) zr_set(fb, y, x, c);
   }
+  // the lights on the top row (the car's front): low beam a green pixel in each outer corner, high beam two blue
+  // ones there instead, interior (dome) light two white pixels in the middle; the proximity bar drawn next wins
+  if (s->lamps & ZR_HIGH_BEAM) {
+    zr_set(fb, 0, 0, ZR_BLUE); zr_set(fb, 0, 1, ZR_BLUE); zr_set(fb, 0, ZR_W - 2, ZR_BLUE); zr_set(fb, 0, ZR_W - 1, ZR_BLUE);
+  } else if (s->lamps & ZR_LOW_BEAM) {
+    zr_set(fb, 0, 1, ZR_GREEN); zr_set(fb, 0, ZR_W - 2, ZR_GREEN);
+  }
+  if (s->lamps & ZR_INTERIOR) { zr_set(fb, 0, 9, ZR_WHITE); zr_set(fb, 0, 10, ZR_WHITE); }
   zr_prox_bar(fb, s->prox_m);
   if (s->mode == ZR_AUTOPILOT || s->mode == ZR_AUTOWARE) {
     zr_set(fb, 9, 0, ZR_CYAN); zr_set(fb, 9, 9, ZR_CYAN); zr_set(fb, 9, 10, ZR_CYAN); zr_set(fb, 9, 19, ZR_CYAN);

@@ -53,7 +53,7 @@ items:
     fields:
       - name: lamps
         type: u8
-        bits: {left_lit: 0, right_lit: 1, brake: 2, reverse: 3, hazard: 4}
+        bits: {left_lit: 0, right_lit: 1, brake: 2, reverse: 3, hazard: 4, high_beam: 5, low_beam: 6, interior: 7}
         safe: {hazard: 1}
         map:
           vss:
@@ -63,6 +63,9 @@ items:
               brake: Vehicle.Body.Lights.Brake.IsActive
               reverse: Vehicle.Body.Lights.Backup.IsOn
               hazard: Vehicle.Body.Lights.Hazard.IsSignaling
+              high_beam: Vehicle.Body.Lights.Beam.High.IsOn
+              low_beam: Vehicle.Body.Lights.Beam.Low.IsOn
+              interior: Vehicle.Cabin.Light.IsDomeOn
       - name: gear
         type: char
         enum: {P: 0x50, R: 0x52, N: 0x4E, D: 0x44}

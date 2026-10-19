@@ -16,7 +16,8 @@
 // Nothing is sent from the receive path itself (the driver's task): ARP replies are queued for the zone task.
 //
 // Packets (little-endian):
-//   state   'VST2' u32 seq, u8 lamps (bit0 left lit, 1 right lit, 2 brake, 3 reverse, 4 hazard), char gear,
+//   state   'VST2' u32 seq, u8 lamps (bit0 left lit, 1 right lit, 2 brake, 3 reverse, 4 hazard, 5 high beam,
+//           6 low beam, 7 interior), char gear,
 //           i16 speed x10 (km/h), u8 mode (0 manual, 1 autopilot, 2 autoware), u8 accel x100,
 //           i16 steering wheel x10 (deg, + = left), u8 brake pedal x100                          = 17 bytes
 //           ('VST1' = the first 14 bytes, no wheel / brake pedal)
@@ -435,7 +436,7 @@ static portMUX_TYPE gStMux = portMUX_INITIALIZER_UNLOCKED;
 static void applyState(uint8_t lamps, char gear, double speed, uint8_t mode, double accel, double wheel, double brake) {
   const int64_t now = esp_timer_get_time();
   portENTER_CRITICAL(&gStMux);
-  gSt.lamps = lamps & 0x0F;
+  gSt.lamps = lamps & (uint8_t)~ZR_HAZARD;      // the blinking itself comes as left/right lit
   gSt.gear = gear;
   gSt.speed = speed;
   gSt.mode = mode;
@@ -585,6 +586,12 @@ static void sensorsOut(uint16_t busyUs) {
 // the gear selector: one flick = one shift (up D, down R, left P, right N), re-armed back inside the centre
 // Only fresh samples from a fully successful cycle count, and a shift needs the same direction in two cycles in a
 // row: a wrong gear sent to the car is worse than a late one (+50 ms).
+static void gearShift(char g) {             // what a confirmed flick sends (also `zone gear <P|R|N|D>`, a test hook)
+  gEvent = g;
+  gEventCount = (gEventCount + 1) & 0x0F;
+  if (gWire == 1 && !zlFresh()) { gGearReqG = g; gGearReq = true; }   // ZC: also as CMD gear.target (ACKed)
+}
+
 static void gearFlick(int x, int y) {
   static char pending = 0;
   if (x < 0 || y < 0) { pending = 0; return; }
@@ -593,9 +600,7 @@ static void gearFlick(int x, int y) {
   const bool confirmed = g && g == pending;
   pending = g;
   if (confirmed && gArmed) {
-    gEvent = g;
-    gEventCount = (gEventCount + 1) & 0x0F;
-    if (gWire == 1 && !zlFresh()) { gGearReqG = g; gGearReq = true; }   // ZC: also as CMD gear.target (ACKed)
+    gearShift(g);
     gArmed = false;
     Con.printf("zone: gear %c (stick x %d y %d)\n", g, x, y);
   } else if (fabsf(jx) < 0.25f && fabsf(jy) < 0.25f) {
@@ -901,6 +906,7 @@ static void status() {
 }
 
 // zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep]
+//      | gear <P|R|N|D>
 static void command(const char *a) {
   char s1[20], s2[20];
   float f;
@@ -949,6 +955,13 @@ static void command(const char *a) {
     }
     return alignStatus();
   }
+  char gch;
+  if (sscanf(a, "gear %c", &gch) == 1) {    // a flick without the stick: the same SNS1 event and CMD gear.target
+    if (!strchr("PRND", gch)) { Con.println("zone gear P|R|N|D"); return; }
+    gearShift(gch);
+    Con.printf("zone: gear %c (console)\n", gch);
+    return;
+  }
   if (!strcmp(a, "reset")) {               // statistics
     gAlAligned = gAlMissed = gAlNoStream = gAlWaitMax = gAlLatMax = 0; gAlWaitSum = gAlLatSum = 0;
     gRcpAfterLedMin = INT32_MAX; gRcpAfterLedMax = 0;
@@ -980,7 +993,7 @@ static void command(const char *a) {
     if (strstr(a, "keep") == nullptr) sensorsClose();
     return;
   }
-  Con.println("zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep]");
+  Con.println("zone [status] | on | off | ip <alias> [endpoint] | bright <0..1> | align [on|off] [delay_us [rcp_ms]] | reset | rcp | sense [n] [keep] | gear <P|R|N|D>");
 }
 
 }  // namespace zone

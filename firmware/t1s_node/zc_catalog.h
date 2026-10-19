@@ -7,7 +7,7 @@
 
 #define ZC_CATALOG_NAME "vehicle-body"
 #define ZC_CATALOG_VERSION 1
-#define ZC_CATALOG_HASH 0x42EB58D2UL   // CRC-32 of the wire contract (zcgen.py canonical()), sent in HEARTBEAT
+#define ZC_CATALOG_HASH 0xD787A7ECUL   // CRC-32 of the wire contract (zcgen.py canonical()), sent in HEARTBEAT
 
 // ---- per item: id, length, header type / class, period and freshness
 // 0x0001 core.heartbeat: HEARTBEAT DIAGNOSTIC, node->gw, port 5009
@@ -75,6 +75,9 @@
 #define ZC_STATE_IN_LAMPS_BRAKE (1u << 2)
 #define ZC_STATE_IN_LAMPS_REVERSE (1u << 3)
 #define ZC_STATE_IN_LAMPS_HAZARD (1u << 4)
+#define ZC_STATE_IN_LAMPS_HIGH_BEAM (1u << 5)
+#define ZC_STATE_IN_LAMPS_LOW_BEAM (1u << 6)
+#define ZC_STATE_IN_LAMPS_INTERIOR (1u << 7)
 #define ZC_STATE_IN_GEAR_P 80
 #define ZC_STATE_IN_GEAR_R 82
 #define ZC_STATE_IN_GEAR_N 78
