@@ -70,6 +70,7 @@ struct Config {
   uint32_t ip = 0;     // 0 = derive from the node ID, see defaultIp()
   uint32_t mask = 0;   // 0 = 255.255.255.0
   uint8_t lan = 1;     // mode node: also bring up the board's own RJ45 (W5500)
+  uint8_t gw = 0;      // mode node: the RJ45 bridged to T1S instead, own IP kept (`gw on`)
   uint32_t lanIp = 0;  // 0 = DHCP
   uint32_t lanMask = 0;
 };
@@ -121,6 +122,7 @@ static void loadConfig() {
   gCfg.ip = gPrefs.getULong("ip", 0);
   gCfg.mask = gPrefs.getULong("mask", 0);
   gCfg.lan = gPrefs.getUChar("lan", gCfg.lan);
+  gCfg.gw = gPrefs.getUChar("gw", gCfg.gw);
   gCfg.lanIp = gPrefs.getULong("lanip", 0);
   gCfg.lanMask = gPrefs.getULong("lanmask", 0);
   gPrefs.end();
@@ -135,6 +137,7 @@ static void saveConfig() {
   gPrefs.putULong("ip", gCfg.ip);
   gPrefs.putULong("mask", gCfg.mask);
   gPrefs.putUChar("lan", gCfg.lan);
+  gPrefs.putUChar("gw", gCfg.gw);
   gPrefs.putULong("lanip", gCfg.lanIp);
   gPrefs.putULong("lanmask", gCfg.lanMask);
   gPrefs.end();
@@ -1811,6 +1814,7 @@ static void cmdStatus() {
   Con.printf("link: %s  ip " IPSTR "/" IPSTR "  spi %u MHz (%.2f actual)  echo %lu\n", gLinkUp ? "up" : "down",
                 IP2STR(&ip.ip), IP2STR(&ip.netmask), gSpiMhzRunning, gSpiActualMhz, (unsigned long)gEchoCount);
   if (gCfg.mode == kModeBridge || gCfg.mode == kModeSniff) { bridge::printStats(); bridge::printPhy(); }
+  if (gCfg.mode == kModeNode && gCfg.gw) { Con.println("gw: on (node + W5500 bridge)"); bridge::printStats(); bridge::printGateway(); bridge::printPhy(); }
   else cmdSink(false);
   if (gCfg.mode == kModeTx) { bridge::printPhy(); bridge::printRx(0, "w5500"); bridge::printW5500Rx(); }
   else if (gCfg.mode == kModeNode) {
@@ -1847,6 +1851,7 @@ static void help() {
       "csma                       PLCA off, plain CSMA/CD\n"
       "ip <a.b.c.d> [mask]        static address (default 192.168.50.10+id)\n"
       "lan dhcp|<ip> [mask]|off   (mode node) the board's own RJ45 next to T1S, own subnet (save + reboot)\n"
+      "gw on|off                  (mode node) gateway: RJ45 bridged to T1S, own IP / Zenoh / PTP kept (save + reboot)\n"
       "spi <mhz>                  SPI clock, 1..25 (applied on reboot)\n"
       "ping <ip> [n]              ICMP over the T1S bus\n"
       "blast <ip> [sec] [bytes] [port] [mbit]  UDP (port 9), seq-numbered; mbit paces it (0 = flat out)\n"
@@ -2005,6 +2010,11 @@ static void handleLine(char *line) {
       }
     } else { Con.println("lan dhcp | lan <ip> [mask] | lan off"); return; }
     Con.printf("lan: %s (`save`; on/off after reboot)\n", !gCfg.lan ? "off" : gCfg.lanIp ? a : "dhcp");
+  } else if (!strcmp(cmd, "gw") && n >= 1) {
+    if (!strcmp(a, "on") || !strcmp(a, "off")) gCfg.gw = !strcmp(a, "on");
+    else { Con.println("gw on | gw off"); return; }
+    Con.printf("gw: %s after `save` + `reboot` (mode node: own IP on T1S + the RJ45 bridged to the bus)\n",
+               gCfg.gw ? "on" : "off");
   } else if (!strcmp(cmd, "spi") && n >= 1) {
     gCfg.spiMhz = constrain(atoi(a), 1, 25);
     Con.printf("spi: %u MHz after save + reboot\n", gCfg.spiMhz);
@@ -2106,7 +2116,15 @@ void setup() {
       Con.println("bridge: W5500 side FAILED -- T1S side is up, nothing forwarded");
   } else {
     // The board's own RJ45 as a second interface (before WiFi: it needs internal DMA RAM)
-    if (gCfg.lan) {
+    if (gCfg.gw) {
+      if (!bridge::startGateway(gEth, gNetif, txGate))
+        Con.println("gw: W5500 bring-up FAILED -- T1S node is unaffected");
+#ifdef LAN865X_FRAME_TIMESTAMPS
+      // The gateway is the bus's time master: the zone nodes lock to its LAN8651 clock over the
+      // UDP 5007 exchange, so its hardware stamps are on from boot (`ptp off` to stop).
+      cmdPtp("on");
+#endif
+    } else if (gCfg.lan) {
       gLan = bridge::startLan(gCfg.lanIp, gCfg.lanMask ? gCfg.lanMask : (uint32_t)IPAddress(255, 255, 255, 0));
       if (!gLan) Con.println("lan: W5500 bring-up FAILED -- T1S is unaffected");
     }

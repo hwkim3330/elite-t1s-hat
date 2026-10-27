@@ -32,6 +32,7 @@
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include "w5500_spi.h"
+#include "src/lan865x/esp_eth_mac_lan865x.h"
 #include "net_console.h"
 
 // The Elite's W5500, as measured on the W5500 bench (LilyGo's schematic agrees on these four).
@@ -398,6 +399,97 @@ inline bool start(esp_eth_handle_t t1s, bool sniff = false) {
                 sniff ? "sniffing: T1S frames copied out of the W5500, nothing sent on T1S"
                       : "bridging 100BASE-TX <-> 10BASE-T1S");
   return err == ESP_OK;
+}
+
+// ---------------------------------------------------------------- gateway (`mode node` + `gw on`)
+// Node mode with the W5500 bridged in: the board keeps its own IP on the T1S netif (Zenoh, the zone
+// controller, the sync answerer and the LAN8651's hardware stamps all keep working) and is at the
+// same time a learning bridge between its RJ45 and the bus. Its own stack is the bridge's third port:
+//   T1S in    -> to lwIP when addressed to this board (own MAC, group); to the W5500 unless the
+//                destination was learned on T1S
+//   W5500 in  -> to T1S unless learned on the W5500 side; to lwIP when addressed to this board
+//   lwIP out  -> (through the T1S glue) the LAN865x TX gate looks at frames with our own source MAC:
+//                group / unknown destinations also go out of the W5500, and a destination learned on
+//                the W5500 side goes only there (refused on T1S, counted as `gated`)
+// Replaces `lan` (the W5500 as a separate interface): one or the other.
+static esp_netif_t *gGwNif = nullptr;
+static uint8_t gGwMac[6];
+static volatile bool gGwOn = false;
+static esp_eth_mac_lan865x_tx_gate_t gGwInnerGate = nullptr;
+static volatile uint32_t gGwToMe[2] = {0, 0}, gGwOut = 0;
+
+static int lookupOnly(const uint8_t *dst) {
+  const uint32_t now = millis();
+  int found = -1;
+  portENTER_CRITICAL(&gLock);
+  for (int i = 0; i < kTable && found < 0; i++) {
+    const Entry &e = gTable[i];
+    if (e.seenMs && now - e.seenMs < kAgeMs && memcmp(e.mac, dst, 6) == 0) found = e.side;
+  }
+  portEXIT_CRITICAL(&gLock);
+  return found;
+}
+
+static void gwForward(uint8_t to, const uint8_t *buf, uint32_t len) {
+  const uint8_t from = to ^ 1;
+  const esp_err_t e = esp_eth_transmit(gPort[to], (void *)buf, len);   // copies before it returns
+  if (e == ESP_OK) bump(gStats.fwd[from]);
+  else if (e == ESP_ERR_NO_MEM) bump(gStats.noMem[from]);
+  else bump(gStats.err[from]);
+}
+
+static esp_err_t gwInput(esp_eth_handle_t h, uint8_t *buf, uint32_t len, void *nif) {
+  const uint8_t side = h == gPort[kTx] ? kTx : kT1s;
+  bump(gStats.in[side]);
+  if (len < 14) { free(buf); return ESP_OK; }
+  const bool mine = memcmp(buf, gGwMac, 6) == 0, group = isGroup(buf);
+  const int dst = learnAndLookup(buf, buf + 6, side);
+  if (!mine && (group || dst != side)) gwForward(side ^ 1, buf, len);
+  else if (!mine) bump(gStats.local[side]);
+  if (mine || group) {
+    bump(gGwToMe[side]);
+    return countingInput(gPort[kT1s], buf, len, nif);   // lwIP frees it; RX tap / counters as on T1S
+  }
+  free(buf);
+  return ESP_OK;
+}
+
+static bool gwGate(const uint8_t *f, uint32_t len) {
+  if (gGwOn && len >= 14 && memcmp(f + 6, gGwMac, 6) == 0) {   // from our own stack
+    const int side = isGroup(f) ? -1 : lookupOnly(f);
+    if (side != kT1s) { gwForward(kTx, f, len); bump(gGwOut); }
+    if (side == kTx) return false;                               // lives over there only
+  }
+  return gGwInnerGate ? gGwInnerGate(f, len) : true;
+}
+
+inline bool startGateway(esp_eth_handle_t t1s, esp_netif_t *nif, esp_eth_mac_lan865x_tx_gate_t inner) {
+  esp_eth_handle_t tx = w5500Install();
+  if (!tx) return false;
+  gPort[kTx] = tx;
+  gPort[kT1s] = t1s;
+  gGwNif = nif;
+  esp_eth_ioctl(t1s, ETH_CMD_G_MAC_ADDR, gGwMac);
+  bool on = true;
+  for (int s = 0; s < 2; s++) {
+    esp_err_t e = esp_eth_ioctl(gPort[s], ETH_CMD_S_PROMISCUOUS, &on);
+    Con.printf("gw: %s promiscuous: %s\n", s == kTx ? "w5500" : "lan8651", esp_err_to_name(e));
+    esp_eth_update_input_path(gPort[s], gwInput, nif);
+  }
+  gGwInnerGate = inner;
+  esp_eth_mac_lan865x_set_tx_gate(gwGate);
+  gGwOn = true;
+  const esp_err_t err = esp_eth_start(tx);
+  gNodeTx = tx;
+  Con.printf("gw: w5500 start: %s -- bridging 100BASE-TX <-> 10BASE-T1S, own stack on "
+             "%02x:%02x:%02x:%02x:%02x:%02x\n", esp_err_to_name(err),
+             gGwMac[0], gGwMac[1], gGwMac[2], gGwMac[3], gGwMac[4], gGwMac[5]);
+  return err == ESP_OK;
+}
+
+inline void printGateway() {
+  Con.printf("gw: to this board from 100BASE-TX %lu, from T1S %lu; own frames also out of the W5500 %lu\n",
+             (unsigned long)gGwToMe[kTx], (unsigned long)gGwToMe[kT1s], (unsigned long)gGwOut);
 }
 
 inline void printStats() {
