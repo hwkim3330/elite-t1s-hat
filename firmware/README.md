@@ -88,7 +88,7 @@ T1S ↔ 100BASE-TX bridge.
 | mode | what the board is | IP | status |
 |---|---|---|---|
 | **node** (default) | a 10BASE-T1S endpoint: lwIP on the LAN8651, ping / UDP echo / `blast`; the Elite's own RJ45 (W5500) comes up next to it as a second interface, see below | yes, 192.168.50.x (+ LAN: DHCP) | **run** (LAN: driver and PHY up, no cable yet) |
-| **bridge** | a **learning Ethernet bridge** between the Elite's W5500 (100BASE-TX) and the LAN8651 (10BASE-T1S), `bridge.h` | none, managed over USB serial | compiles |
+| **bridge** | a **learning Ethernet bridge** between the Elite's W5500 (100BASE-TX) and the LAN8651 (10BASE-T1S), `bridge.h` | none, managed over USB serial | **run** (2026-10-27: PC 100BASE-TX → bridge → 2 SAM E51 T1S nodes, ping 3/3 ≈ 2.1–2.4 ms, PLCA 0/8 coordinator kept, 0 dropped) |
 | **tx** | **no LAN8651:** the Elite's W5500 as an ordinary IP endpoint (echo, sink, `blast`, `ping`), default 192.168.100.66. This is the second board of a two-ESP bench, in the PC's place on the converter's 100BASE-TX port | yes, W5500 | **run** |
 | **sniff** | a **receive-only bus analyser**: every T1S frame is copied out of the W5500 to a capture PC (Wireshark). PLCA is held off, there is no IP, and nothing is sent on T1S, so the bus under test is not disturbed | none | compiles, not run |
 
